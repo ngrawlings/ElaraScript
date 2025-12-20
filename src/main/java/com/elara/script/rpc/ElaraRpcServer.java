@@ -1,5 +1,8 @@
 package com.elara.script.rpc;
 
+import com.elara.protocol.ElaraEngineProtocol;
+import com.elara.script.ElaraScript;
+
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -12,6 +15,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
@@ -33,23 +37,35 @@ public final class ElaraRpcServer implements Closeable {
     private volatile boolean running = true;
     private ServerSocket serverSocket;
 
+    // ✅ Protocol (pure Java): same semantics as Android host
+    private final ElaraEngineProtocol protocol;
+
     // -------------------------------
     // Event queue (cursor-based)
     // -------------------------------
     private static final class EventEntry {
         final long seq;
-        final ObjectNode event; // {"seq":..,"type":..,"payload":..} or your preferred shape
+        final ObjectNode event;
         EventEntry(long seq, ObjectNode event) { this.seq = seq; this.event = event; }
     }
 
     private final AtomicLong nextSeq = new AtomicLong(1);
     private final ReentrantLock eventsLock = new ReentrantLock();
     private final ArrayList<EventEntry> events = new ArrayList<>();
-    private final int maxEventsKept = 10_000; // dev cap; tune as desired
+    private final int maxEventsKept = 10_000;
 
     public ElaraRpcServer(int port, int threads) {
         this.port = port;
         this.pool = Executors.newFixedThreadPool(Math.max(1, threads));
+
+        // Wire protocol with non-Android builtins + console logger
+        this.protocol = new ElaraEngineProtocol(
+                ElaraRpcServer::registerRpcBuiltins,
+                new ElaraEngineProtocol.Logger() {
+                    @Override public void i(String tag, String msg) { log("[" + tag + "] " + msg); }
+                    @Override public void w(String tag, String msg) { log("[" + tag + "][WARN] " + msg); }
+                }
+        );
     }
 
     public void start() throws IOException {
@@ -98,27 +114,60 @@ public final class ElaraRpcServer implements Closeable {
         try {
             String method = req.path("method").asText("");
 
-            // Support both "args" (what Linux bridge sends) and "params" (your earlier draft)
+            // Support both "args" and "params"
             JsonNode args = req.has("args") ? req.get("args") : req.get("params");
 
             switch (method) {
                 case "dispatchEvent" -> {
-                    // TODO: wire to your real ElaraScript engine call here
-                    // e.g. Result r = engine.dispatchEvent(args...);
+                    if (args == null || !args.isObject()) {
+                        resp.put("ok", false);
+                        resp.put("error", "dispatchEvent requires object args");
+                        return resp;
+                    }
+
+                    // Extract arguments (match Flutter bridge shape)
+                    String stateJson = args.hasNonNull("stateJson") ? args.get("stateJson").asText() : null;
+                    String appScript = args.hasNonNull("appScript") ? args.get("appScript").asText() : null;
+
+                    // event is required: Map<String,Object>
+                    JsonNode eventNode = args.get("event");
+                    if (eventNode == null || !eventNode.isObject()) {
+                        resp.put("ok", false);
+                        resp.put("error", "dispatchEvent requires args.event object");
+                        return resp;
+                    }
+
+                    // patch is optional: List<[key,value]>
+                    JsonNode patchNode = args.get("patch");
+
+                    // Convert JSON -> Java types
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> event = om.convertValue(eventNode, Map.class);
+
+                    Object patchObj = null;
+                    if (patchNode != null && !patchNode.isNull()) {
+                        // List of [key,value]
+                        patchObj = om.convertValue(patchNode, Object.class);
+                    }
+
+                    // ✅ Call the protocol (not the engine directly)
+                    Map<String, Object> resultMap = protocol.dispatchEvent(
+                            stateJson,
+                            appScript,
+                            event,
+                            patchObj
+                    );
 
                     // DEV: emit an event so you can test polling end-to-end
-                    // You can replace this with real engine events later.
                     ObjectNode payload = om.createObjectNode();
-                    payload.set("args", args == null ? om.nullNode() : args);
+                    payload.set("args", args);
                     emitEvent("dispatchEvent_called", payload);
 
-                    ObjectNode result = om.createObjectNode();
-                    result.putArray("patch");       // stub
-                    result.putArray("commands");    // stub
-                    result.put("fingerprint", "stub-fp");
+                    // Return protocol result
+                    JsonNode resultNode = om.valueToTree(resultMap);
 
                     resp.put("ok", true);
-                    resp.set("result", result);
+                    resp.set("result", resultNode);
                 }
 
                 case "pollEvents" -> {
@@ -152,13 +201,66 @@ public final class ElaraRpcServer implements Closeable {
     }
 
     // -------------------------------
+    // Builtins for RPC host (NO android.*)
+    // -------------------------------
+
+    private static void registerRpcBuiltins(ElaraScript engine) {
+        // Minimal, portable builtins that won't touch hardware/UI.
+
+        // native_log(tag, msg)
+        engine.registerFunction("native_log", args -> {
+            if (args.size() != 2) throw new RuntimeException("native_log expects 2 args");
+            String tag = args.get(0).asString();
+            String msg = args.get(1).asString();
+            System.out.println("[" + tag + "] " + msg);
+            return ElaraScript.Value.nil();
+        });
+
+        // nowMillis() -> number
+        engine.registerFunction("nowMillis", args -> {
+            if (args.size() != 0) throw new RuntimeException("nowMillis expects 0 args");
+            return ElaraScript.Value.number((double) System.currentTimeMillis());
+        });
+
+        // uuid() -> string
+        engine.registerFunction("uuid", args -> {
+            if (args.size() != 0) throw new RuntimeException("uuid expects 0 args");
+            return ElaraScript.Value.string(java.util.UUID.randomUUID().toString());
+        });
+
+        // randInt(minInclusive, maxInclusive) -> number
+        engine.registerFunction("randInt", args -> {
+            if (args.size() != 2) throw new RuntimeException("randInt expects 2 args");
+            int a = (int) args.get(0).asNumber();
+            int b = (int) args.get(1).asNumber();
+            int lo = Math.min(a, b);
+            int hi = Math.max(a, b);
+            int r = java.util.concurrent.ThreadLocalRandom.current().nextInt(lo, hi + 1);
+            return ElaraScript.Value.number((double) r);
+        });
+
+        // setview(parentId, viewName) -> string (placeholder, host-agnostic)
+        engine.registerFunction("setview", args -> {
+            if (args.size() != 2) throw new RuntimeException("setview expects 2 args");
+            String view = args.get(1).asString();
+            return ElaraScript.Value.string(view);
+        });
+
+        // toast(...) is Android-only; fail fast to keep scripts honest
+        engine.registerFunction("toast", args -> {
+            throw new RuntimeException("toast() is not supported in RPC host");
+        });
+
+        // readline(...) optional: either implement using RPC or fail fast
+        engine.registerFunction("readline", args -> {
+            throw new RuntimeException("readline() is not supported in RPC host");
+        });
+    }
+
+    // -------------------------------
     // Event API
     // -------------------------------
 
-    /**
-     * Enqueue a new event. Shape is yours to define, but keep it consistent across Android/Linux.
-     * I recommend: {"seq":N, "type":"...", "payload":<json>}
-     */
     public long emitEvent(String type, JsonNode payload) {
         long seq = nextSeq.getAndIncrement();
 
@@ -170,8 +272,6 @@ public final class ElaraRpcServer implements Closeable {
         eventsLock.lock();
         try {
             events.add(new EventEntry(seq, ev));
-
-            // Cap history to avoid unbounded memory during dev
             int overflow = events.size() - maxEventsKept;
             if (overflow > 0) {
                 events.subList(0, overflow).clear();
@@ -183,10 +283,6 @@ public final class ElaraRpcServer implements Closeable {
         return seq;
     }
 
-    /**
-     * Return all events with seq > cursor.
-     * Response: {"cursor":<latestSeqSeenOrCursor>, "events":[...]}
-     */
     private ObjectNode pollEvents(long cursor) {
         ObjectNode result = om.createObjectNode();
         ArrayNode outEvents = om.createArrayNode();
@@ -195,8 +291,6 @@ public final class ElaraRpcServer implements Closeable {
 
         eventsLock.lock();
         try {
-            // If we trimmed history and cursor is too old, you may want to signal a resync.
-            // For dev, we'll just return from the earliest available.
             for (EventEntry e : events) {
                 if (e.seq > cursor) {
                     outEvents.add(e.event);
@@ -218,11 +312,11 @@ public final class ElaraRpcServer implements Closeable {
 
     private static byte[] readFrame(InputStream in) throws IOException {
         byte[] lenBuf = in.readNBytes(4);
-        if (lenBuf.length == 0) return null; // clean EOF
+        if (lenBuf.length == 0) return null;
         if (lenBuf.length < 4) throw new EOFException("partial length header");
 
         int len = ByteBuffer.wrap(lenBuf).order(ByteOrder.BIG_ENDIAN).getInt();
-        if (len < 0 || len > (32 * 1024 * 1024)) { // 32MB sanity cap
+        if (len < 0 || len > (32 * 1024 * 1024)) {
             throw new IOException("bad frame length: " + len);
         }
         byte[] payload = in.readNBytes(len);
@@ -252,7 +346,7 @@ public final class ElaraRpcServer implements Closeable {
         int threads = 4;
         ElaraRpcServer server = new ElaraRpcServer(port, threads);
 
-        // Optional: produce a heartbeat event every 2s so you can see polling works immediately
+        // Optional: heartbeat event every 2s
         ScheduledExecutorService ses = Executors.newSingleThreadScheduledExecutor();
         ses.scheduleAtFixedRate(() -> {
             try {

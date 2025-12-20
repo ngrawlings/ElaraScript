@@ -1,4 +1,4 @@
-package com.elara.script;
+package com.elara.protocol;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
