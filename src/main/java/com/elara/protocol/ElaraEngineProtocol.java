@@ -5,12 +5,15 @@ import com.elara.protocol.util.StateFingerprint;
 import com.elara.script.ElaraScript;
 import com.elara.script.ElaraStateStore;
 
+import java.security.SecureRandom;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 
@@ -18,15 +21,24 @@ import java.util.regex.Pattern;
  * Pure-Java protocol layer (no android.*, no flutter MethodCall/Result).
  *
  * Responsibilities:
- *  - protocol-owned state lifecycle (state lives as long as this protocol instance lives)
- *  - inject __event globals
- *  - include preprocessing (#include "...") using scripts cached from system.ready payload
- *  - route to event_<type>_<target> or fallback event_router
- *  - run ElaraScript and return {patch, commands, fingerprint} sanitized for channel transport
+ *  - Own state per session (multiple apps running simultaneously)
+ *  - Create a new session on event_system_ready (type=system,target=ready)
+ *  - Return {sessionId, sessionKey} on system.ready so callers can route future events
+ *  - Enforce sessionKey for isolation (apps cannot write into other sessions)
+ *  - Inject __event globals
+ *  - Include preprocessing (#include "...") using scripts cached from system.ready payload (per-session)
+ *  - Route to event_<type>_<target> or fallback event_router
+ *  - Run ElaraScript and return {patch, commands, fingerprint} sanitized for channel transport
+ *
+ * Session contract:
+ *  - system.ready MUST be called first for a new app instance.
+ *  - system.ready creates a new session and caches scripts from payload["scripts"].
+ *  - Subsequent events MUST include sessionId + sessionKey in the event map
+ *      (top-level keys "sessionId" and "sessionKey"), and will be routed to that session state.
  *
  * Notes:
  *  - State is JSON-safe: Map<String,Object> where Object is null/bool/num/string/List/Map
- *  - Keys starting with "__" are ignored for diffing (StateDiff) but may exist in stateRaw; callers should not rely on them.
+ *  - Keys starting with "__" are ignored for diffing (StateDiff) and should not be relied on as persisted app state.
  */
 public final class ElaraEngineProtocol {
 
@@ -44,17 +56,32 @@ public final class ElaraEngineProtocol {
     private final BuiltinsRegistrar builtins;
     private final Logger log;
 
-    // scripts cached from system.ready payload
-    private final Map<String, String> scriptCache = new ConcurrentHashMap<>();
-
-    // -------------------------- Protocol-owned state --------------------------
-    // The state lifecycle == this protocol instance lifecycle.
-    // If your RPC server creates a new protocol instance per request, state will reset.
-    private final Map<String, Object> stateRaw = new LinkedHashMap<>();
-    private String stateFingerprint = StateFingerprint.fingerprintRawState(stateRaw);
-
     private static final Pattern INCLUDE =
             Pattern.compile("^\\s*#include\\s+\"([^\"]+)\"\\s*$");
+
+    // -------------------------- Sessions --------------------------
+
+    private static final class Session {
+        final String sessionId;
+        final String sessionKey;
+
+        // per-session include cache (populated on system.ready)
+        final Map<String, String> scriptCache = new ConcurrentHashMap<>();
+
+        // per-session retained state (JSON-safe)
+        final Map<String, Object> stateRaw = new LinkedHashMap<>();
+        String fingerprint = StateFingerprint.fingerprintRawState(stateRaw);
+
+        Session(String sessionId, String sessionKey) {
+            this.sessionId = sessionId;
+            this.sessionKey = sessionKey;
+        }
+    }
+
+    /** sessionId -> Session */
+    private final Map<String, Session> sessions = new ConcurrentHashMap<>();
+
+    private final SecureRandom rng = new SecureRandom();
 
     public ElaraEngineProtocol(BuiltinsRegistrar builtins, Logger log) {
         if (builtins == null) throw new IllegalArgumentException("builtins is null");
@@ -62,54 +89,33 @@ public final class ElaraEngineProtocol {
         this.log = log;
     }
 
-    // -------------------------- State lifecycle API --------------------------
-
-    /** Clear all retained state for this protocol instance. */
-    public synchronized void resetState() {
-        stateRaw.clear();
-        stateFingerprint = StateFingerprint.fingerprintRawState(stateRaw);
-    }
-
-    /** Replace retained state from JSON (useful when loading an app/session). */
-    public synchronized void loadStateJson(String stateJson) {
-        if (stateJson == null || stateJson.trim().isEmpty()) {
-            resetState();
-            return;
-        }
-        ElaraStateStore s = ElaraStateStore.fromJson(stateJson);
-        stateRaw.clear();
-        stateRaw.putAll(s.toRawInputs());
-        stateFingerprint = StateFingerprint.fingerprintRawState(stateRaw);
-    }
-
-    /** Returns the last known fingerprint of retained state. */
-    public synchronized String getStateFingerprint() {
-        return stateFingerprint;
-    }
-
-    /** Returns a defensive copy of the retained raw state. */
-    public synchronized Map<String, Object> snapshotStateRaw() {
-        return new LinkedHashMap<>(stateRaw);
-    }
-
     // -------------------------- Public API --------------------------
 
     /**
      * Dispatch an event into the script engine.
      *
-     * IMPORTANT:
-     * - This method uses and updates protocol-owned state (stateRaw).
-     * - It does NOT accept caller-provided stateJson/patch; state comes from this instance.
+     * Inputs:
+     *  - appScript: the app source (may contain #include directives)
+     *  - event: a JSON-safe map with at least {type,target,value}
+     *     - For non-system.ready events, MUST also include:
+     *         - sessionId: String
+     *         - sessionKey: String
      *
-     * Returns a channel-safe map:
+     * Output (channel-safe map):
      *   {
      *     "patch": { "set": [[k,v],...], "remove": [k,...] },
      *     "commands": [...],
-     *     "fingerprint": "<md5>"
+     *     "fingerprint": "<md5>",
+     *     "sessionId": "<id>",
+     *     "sessionKey": "<key>"   // only returned on system.ready by default (see below)
      *   }
+     *
+     * Security:
+     *  - sessionKey is checked for all non-system.ready events.
+     *  - system.ready always creates a NEW session and returns its key.
      */
     @SuppressWarnings("unchecked")
-    public synchronized Map<String, Object> dispatchEvent(
+    public Map<String, Object> dispatchEvent(
             String appScript,
             Map<String, Object> event
     ) {
@@ -120,8 +126,36 @@ public final class ElaraEngineProtocol {
             throw new IllegalArgumentException("event required");
         }
 
-        // --- Baseline is protocol-owned state (snapshot for diff) ---
-        Map<String, Object> rawInputs = new LinkedHashMap<>(stateRaw);
+        // read event identity early
+        Object t0 = event.get("type");
+        Object target0 = event.get("target");
+        String typeStr = (t0 == null) ? "" : String.valueOf(t0);
+        String targetStr = (target0 == null) ? "" : String.valueOf(target0);
+
+        boolean isSystemReady = "system".equals(typeStr) && "ready".equals(targetStr);
+
+        // Resolve or create session
+        Session session;
+        boolean createdSession = false;
+
+        if (isSystemReady) {
+            session = createSession();
+            createdSession = true;
+            if (log != null) log.i("ElaraProtocol", "Created new session on system.ready id=" + session.sessionId);
+        } else {
+            Object sid = event.get("sessionId");
+            Object sk  = event.get("sessionKey");
+            if (!(sid instanceof String) || ((String) sid).trim().isEmpty()) {
+                throw new IllegalArgumentException("Missing event.sessionId (required for non-system.ready)");
+            }
+            if (!(sk instanceof String) || ((String) sk).trim().isEmpty()) {
+                throw new IllegalArgumentException("Missing event.sessionKey (required for non-system.ready)");
+            }
+            session = getSessionOrThrow((String) sid, (String) sk);
+        }
+
+        // --- Baseline is session-owned state (snapshot for diff) ---
+        Map<String, Object> rawInputs = new LinkedHashMap<>(session.stateRaw);
 
         // Build env for script from baseline
         Map<String, ElaraScript.Value> initialEnv = new LinkedHashMap<>();
@@ -130,12 +164,10 @@ public final class ElaraEngineProtocol {
         }
 
         // Inject latest event into env
-        Object t = event.get("type");
-        Object target = event.get("target");
         Object value = event.get("value");
 
-        initialEnv.put("__event_type", ElaraScript.Value.string(t == null ? "" : String.valueOf(t)));
-        initialEnv.put("__event_target", ElaraScript.Value.string(target == null ? "" : String.valueOf(target)));
+        initialEnv.put("__event_type", ElaraScript.Value.string(typeStr));
+        initialEnv.put("__event_target", ElaraScript.Value.string(targetStr));
         initialEnv.put("__event_value", coerceAnyToValue(value));
 
         List<ElaraScript.Value> tuple = new ArrayList<>();
@@ -148,7 +180,7 @@ public final class ElaraEngineProtocol {
         ElaraScript engine = new ElaraScript();
         builtins.register(engine);
 
-        // We pass __event as the single argument for convenience
+        // We pass __event as args = [type,target,value]
         ElaraScript.Value ev = initialEnv.get("__event");
         if (ev == null || ev.getType() != ElaraScript.Value.Type.ARRAY) {
             throw new RuntimeException("__event missing or not ARRAY");
@@ -159,22 +191,16 @@ public final class ElaraEngineProtocol {
         }
 
         List<ElaraScript.Value> args = List.of(evA.get(0), evA.get(1), evA.get(2));
-
-        ElaraScript.Value typeV   = evA.get(0);
-        ElaraScript.Value targetV = evA.get(1);
         ElaraScript.Value payload = evA.get(2);
 
         // cache includes on system.ready (payload may be MAP or legacy PAIRS array)
-        if (typeV.getType() == ElaraScript.Value.Type.STRING
-                && targetV.getType() == ElaraScript.Value.Type.STRING
-                && "system".equals(typeV.asString())
-                && "ready".equals(targetV.asString())) {
-            if (log != null) log.i("ElaraProtocol", "cacheScriptsFromPayload(system.ready)");
-            cacheScriptsFromPayload(payload);
+        if (isSystemReady) {
+            if (log != null) log.i("ElaraProtocol", "cacheScriptsFromPayload(system.ready) session=" + session.sessionId);
+            cacheScriptsFromPayload(session, payload);
         }
 
         // preprocess includes (after caching)
-        String processed = preprocessIncludes(appScript);
+        String processed = preprocessIncludes(session, appScript);
 
         // Guard: engine must never see a raw include directive
         if (processed.contains("#include")) {
@@ -182,7 +208,7 @@ public final class ElaraEngineProtocol {
         }
 
         // Routing
-        String candidate = "event_" + sanitizeIdent(typeV.asString()) + "_" + sanitizeIdent(targetV.asString());
+        String candidate = "event_" + sanitizeIdent(typeStr) + "_" + sanitizeIdent(targetStr);
         String fallback = "event_router";
         String entry = engine.hasUserFunction(processed, candidate) ? candidate : fallback;
 
@@ -197,10 +223,12 @@ public final class ElaraEngineProtocol {
         Map<String, Object> diff = StateDiff.diff(rawInputs, raw).toPatchObject();
         String fp = StateFingerprint.fingerprintRawState(raw);
 
-        // Update protocol-owned state to match the engine output (state lifecycle == protocol lifecycle)
-        stateRaw.clear();
-        stateRaw.putAll(raw);
-        stateFingerprint = fp;
+        // Update session-owned state to match the engine output
+        synchronized (session) {
+            session.stateRaw.clear();
+            session.stateRaw.putAll(raw);
+            session.fingerprint = fp;
+        }
 
         Object cmdsObj = raw.get("__commands");
         List<Object> commandsList = (cmdsObj instanceof List) ? (List<Object>) cmdsObj : new ArrayList<>();
@@ -210,8 +238,44 @@ public final class ElaraEngineProtocol {
         resp.put("commands", commandsList);
         resp.put("fingerprint", fp);
 
+        // Always return the sessionId so the caller can route subsequent events.
+        resp.put("sessionId", session.sessionId);
+
+        // Only return the sessionKey on system.ready (bootstrap); don't leak it on every call by default.
+        if (createdSession) {
+            resp.put("sessionKey", session.sessionKey);
+        }
+
         // IMPORTANT: sanitize before crossing platform channel
         return (Map<String, Object>) sanitizeForChannel(resp);
+    }
+
+    // -------------------------- Session management --------------------------
+
+    private Session createSession() {
+        String id = UUID.randomUUID().toString();
+        String key = randomSessionKey();
+        Session s = new Session(id, key);
+        sessions.put(id, s);
+        return s;
+    }
+
+    private Session getSessionOrThrow(String sessionId, String sessionKey) {
+        Session s = sessions.get(sessionId);
+        if (s == null) {
+            throw new IllegalArgumentException("Unknown sessionId: " + sessionId);
+        }
+        if (!s.sessionKey.equals(sessionKey)) {
+            throw new IllegalArgumentException("Invalid sessionKey for sessionId: " + sessionId);
+        }
+        return s;
+    }
+
+    private String randomSessionKey() {
+        byte[] buf = new byte[32]; // 256-bit
+        rng.nextBytes(buf);
+        // URL-safe, no padding
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(buf);
     }
 
     // -------------------------- Includes cache --------------------------
@@ -225,8 +289,8 @@ public final class ElaraEngineProtocol {
         return null;
     }
 
-    private void cacheScriptsFromPayload(ElaraScript.Value payload) {
-        if (payload == null) return;
+    private void cacheScriptsFromPayload(Session session, ElaraScript.Value payload) {
+        if (payload == null || session == null) return;
 
         ElaraScript.Value scriptsV = null;
 
@@ -238,25 +302,24 @@ public final class ElaraEngineProtocol {
         }
 
         if (scriptsV == null || scriptsV.getType() != ElaraScript.Value.Type.ARRAY) {
-            if (log != null) {
-                log.w("ElaraProtocol", "No scripts to load from payload");
-            }
+            if (log != null) log.w("ElaraProtocol", "No scripts to load from payload");
             return;
         }
 
         for (ElaraScript.Value kv : scriptsV.asArray()) {
             var p = kv.asArray();
+            if (p.size() < 2) continue;
             String path = p.get(0).asString();
             String src  = p.get(1).asString();
-            scriptCache.put(path, src);
+            session.scriptCache.put(path, src);
         }
     }
 
-    private String preprocessIncludes(String src) {
-        return preprocessIncludes(src, new ArrayDeque<>());
+    private String preprocessIncludes(Session session, String src) {
+        return preprocessIncludes(session, src, new ArrayDeque<>());
     }
 
-    private String preprocessIncludes(String src, Deque<String> stack) {
+    private String preprocessIncludes(Session session, String src, Deque<String> stack) {
         StringBuilder out = new StringBuilder(src.length() + 256);
         String[] lines = src.split("\n", -1);
 
@@ -273,13 +336,14 @@ public final class ElaraEngineProtocol {
                 throw new RuntimeException("Include cycle: " + stack + " -> " + path);
             }
 
-            String included = scriptCache.get(path);
+            String included = (session == null) ? null : session.scriptCache.get(path);
             if (included == null) {
-                throw new RuntimeException("Include not found in script cache: " + path);
+                throw new RuntimeException("Include not found in script cache (session " +
+                        (session == null ? "null" : session.sessionId) + "): " + path);
             }
 
             stack.addLast(path);
-            out.append(preprocessIncludes(included, stack));
+            out.append(preprocessIncludes(session, included, stack));
             stack.removeLast();
         }
 

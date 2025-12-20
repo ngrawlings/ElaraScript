@@ -17,10 +17,15 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * Persistent stdin REPL for Elara RPC.
  *
- * Transport is stateless (reconnect per request). "Session" is client-side:
- * - keeps lastPatch + fingerprint
- * - can optionally force a full stateJson for next call
- * - sends deterministic system.ready payload via ElaraScriptPreloader
+ * Transport is stateless (reconnect per request).
+ *
+ * Session routing (server-side):
+ *  - system.ready creates a new server session and returns {sessionId, sessionKey}
+ *  - client stores sessionId/sessionKey and includes them on subsequent dispatches
+ *
+ * Legacy client-side patch chaining:
+ *  - kept for compatibility with older servers
+ *  - if server ignores patch/stateJson, it is harmless
  *
  * Default flow:
  *   > ready
@@ -38,7 +43,7 @@ public final class ElaraRpcRepl {
     private static final int MAX_FRAME = 32 * 1024 * 1024;
 
     // -----------------------------
-    // Session state (client is master)
+    // Session state (client tracking)
     // -----------------------------
     private final String host;
     private final int port;
@@ -48,11 +53,16 @@ public final class ElaraRpcRepl {
     private final String entryLogical;     // stable include key (relative to scriptsRoot)
     private final String appScriptText;    // events.es source
 
+    // Server session routing (new protocol)
+    private String sessionId;
+    private String sessionKey;
+
+    // Legacy client-side patch chain (older protocol)
     private ArrayNode lastPatch;           // chain patch returned from protocol
     private String lastFingerprint;
     private long cursor;
 
-    // Optional "force full sync next request"
+    // Optional "force full sync next request" (older protocol)
     private String nextStateJson;
     private ArrayNode nextPatchOverride;
 
@@ -71,6 +81,9 @@ public final class ElaraRpcRepl {
                 .toString().replace('\\', '/');
 
         this.appScriptText = Files.readString(this.entryScriptPathAbs, StandardCharsets.UTF_8);
+
+        this.sessionId = null;
+        this.sessionKey = null;
 
         this.lastPatch = null;
         this.lastFingerprint = null;
@@ -182,6 +195,8 @@ public final class ElaraRpcRepl {
                     }
 
                     case "show" -> {
+                        System.out.println("sessionId:   " + (sessionId == null ? "(none)" : sessionId));
+                        System.out.println("sessionKey:  " + (sessionKey == null ? "(none)" : "(set)"));
                         System.out.println("fingerprint: " + (lastFingerprint == null ? "(none)" : lastFingerprint));
                         System.out.println("lastPatch:   " + (lastPatch == null ? "(none)" : ("entries=" + lastPatch.size())));
                         System.out.println("cursor:      " + cursor);
@@ -233,6 +248,8 @@ public final class ElaraRpcRepl {
 
                     case "reset" -> {
                         // client-side reset
+                        sessionId = null;
+                        sessionKey = null;
                         lastPatch = null;
                         lastFingerprint = null;
                         cursor = 0;
@@ -254,10 +271,11 @@ public final class ElaraRpcRepl {
 Commands:
   ready [tsMillis]
       Send system/ready with deterministic preloaded scripts payload.
-      Resets client patch chain + fingerprint + cursor.
+      Stores server sessionId/sessionKey and resets client patch chain + fingerprint + cursor.
 
   send <type> <target> [value.json]
       Send an event. value.json is optional (defaults to null).
+      Automatically includes sessionId/sessionKey after ready.
 
   poll
       Poll server events once (uses current cursor).
@@ -268,15 +286,15 @@ Commands:
       Stop event following.
 
   show
-      Show client session state (fingerprint, patch size, cursor, pending overrides).
+      Show client session state (sessionId/sessionKey, fingerprint, patch size, cursor, pending overrides).
 
   state load <state.json>
-      Force a full sync on NEXT dispatch (stateJson wins on server).
+      Force a full sync on NEXT dispatch (legacy servers only).
   state clear
       Clear pending full sync.
 
   patch <patch.json>
-      Force a patch override on NEXT dispatch (JSON array of [key,value]).
+      Force a patch override on NEXT dispatch (legacy servers only).
   clearpatch
       Clear pending patch override.
 
@@ -320,20 +338,29 @@ Commands:
         ev.set("value", om.valueToTree(readyPayload));
         args.set("event", ev);
 
-        return rpcCall("dispatchEvent", args);
+        JsonNode resp = rpcCall("dispatchEvent", args);
+
+        // Store sessionId/sessionKey if returned
+        storeSessionFromResponse(resp);
+
+        return resp;
     }
 
     private JsonNode doDispatch(String type, String target, Object valueObj) throws Exception {
+        if (sessionId == null || sessionKey == null) {
+            System.out.println("WARN: no sessionId/sessionKey set. Run 'ready' first.");
+        }
+
         ObjectNode args = om.createObjectNode();
         args.put("appScript", appScriptText);
 
-        // Full sync wins if provided
+        // Full sync wins if provided (legacy servers)
         if (nextStateJson != null && !nextStateJson.trim().isEmpty()) {
             args.put("stateJson", nextStateJson);
             // consume it after use
             nextStateJson = null;
         } else {
-            // Otherwise patch-chaining
+            // Otherwise patch-chaining (legacy servers)
             ArrayNode patchToSend = null;
 
             if (nextPatchOverride != null) {
@@ -352,11 +379,16 @@ Commands:
         ev.put("type", type);
         ev.put("target", target);
         ev.set("value", valueObj == null ? NullNode.instance : om.valueToTree(valueObj));
+
+        // ✅ include session routing (new protocol)
+        if (sessionId != null) ev.put("sessionId", sessionId);
+        if (sessionKey != null) ev.put("sessionKey", sessionKey);
+
         args.set("event", ev);
 
         JsonNode resp = rpcCall("dispatchEvent", args);
 
-        // Update chain from response (if ok)
+        // Update chain from response (if ok) - legacy behavior
         JsonNode ok = resp.get("ok");
         if (ok != null && ok.isBoolean() && ok.booleanValue()) {
             JsonNode result = resp.get("result");
@@ -366,10 +398,38 @@ Commands:
 
                 JsonNode fp = result.get("fingerprint");
                 if (fp != null && fp.isTextual()) lastFingerprint = fp.asText();
+
+                // Some servers may echo sessionId (or even sessionKey); accept sessionId always, key only if absent.
+                JsonNode sid = result.get("sessionId");
+                if (sid != null && sid.isTextual()) sessionId = sid.asText();
+
+                JsonNode sk = result.get("sessionKey");
+                if (sk != null && sk.isTextual() && (sessionKey == null || sessionKey.isEmpty())) sessionKey = sk.asText();
             }
         }
 
         return resp;
+    }
+
+    private void storeSessionFromResponse(JsonNode resp) {
+        // expects rpc shape: { ok: true, result: { sessionId: "...", sessionKey: "..." } }
+        JsonNode ok = resp.get("ok");
+        if (ok == null || !ok.isBoolean() || !ok.booleanValue()) return;
+
+        JsonNode result = resp.get("result");
+        if (result == null || !result.isObject()) return;
+
+        JsonNode sid = result.get("sessionId");
+        JsonNode sk = result.get("sessionKey");
+
+        if (sid != null && sid.isTextual()) sessionId = sid.asText();
+        if (sk != null && sk.isTextual()) sessionKey = sk.asText();
+
+        if (sessionId != null && sessionKey != null) {
+            System.out.println("Server session established: sessionId=" + sessionId + " sessionKey=(set)");
+        } else if (sessionId != null) {
+            System.out.println("Server sessionId returned without sessionKey: sessionId=" + sessionId);
+        }
     }
 
     private JsonNode doPollOnce() throws Exception {

@@ -152,10 +152,8 @@ public final class ElaraRpcServer implements Closeable {
 
                     // ✅ Call the protocol (not the engine directly)
                     Map<String, Object> resultMap = protocol.dispatchEvent(
-                            stateJson,
                             appScript,
-                            event,
-                            patchObj
+                            event
                     );
 
                     // DEV: emit an event so you can test polling end-to-end
