@@ -1237,6 +1237,31 @@ public class ElaraScript {
                 }
                 return Value.bool(env.exists(v.asString()));
             }
+            
+            // getglobal("varName") -> value|nil
+            if ("getglobal".equals(name)) {
+                if (args.size() != 1) throw new RuntimeException("getglobal() expects 1 argument");
+                Value v = args.get(0);
+                if (v.getType() != Value.Type.STRING) throw new RuntimeException("getglobal() expects a string name");
+
+                Environment g = env;
+                while (g.parent != null) g = g.parent;          // walk to root env
+                Value out = g.vars.get(v.asString());           // root lookup only
+                return (out == null) ? Value.nil() : out;
+            }
+
+            // setglobal("varName", value) -> value
+            if ("setglobal".equals(name)) {
+                if (args.size() != 2) throw new RuntimeException("setglobal() expects 2 arguments");
+                Value k = args.get(0);
+                Value val = args.get(1);
+                if (k.getType() != Value.Type.STRING) throw new RuntimeException("setglobal() first arg must be string");
+
+                Environment g = env;
+                while (g.parent != null) g = g.parent;          // walk to root env
+                g.vars.put(k.asString(), val);                  // overwrite/create at root
+                return val;
+            }
 
             if (callStack.size() >= maxDepth) throw new RuntimeException("Max call depth exceeded");
 
