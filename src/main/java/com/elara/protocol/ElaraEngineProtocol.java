@@ -18,11 +18,15 @@ import java.util.regex.Pattern;
  * Pure-Java protocol layer (no android.*, no flutter MethodCall/Result).
  *
  * Responsibilities:
- *  - resolve stateJson vs patch
+ *  - protocol-owned state lifecycle (state lives as long as this protocol instance lives)
  *  - inject __event globals
  *  - include preprocessing (#include "...") using scripts cached from system.ready payload
  *  - route to event_<type>_<target> or fallback event_router
  *  - run ElaraScript and return {patch, commands, fingerprint} sanitized for channel transport
+ *
+ * Notes:
+ *  - State is JSON-safe: Map<String,Object> where Object is null/bool/num/string/List/Map
+ *  - Keys starting with "__" are ignored for diffing (StateDiff) but may exist in stateRaw; callers should not rely on them.
  */
 public final class ElaraEngineProtocol {
 
@@ -40,7 +44,14 @@ public final class ElaraEngineProtocol {
     private final BuiltinsRegistrar builtins;
     private final Logger log;
 
+    // scripts cached from system.ready payload
     private final Map<String, String> scriptCache = new ConcurrentHashMap<>();
+
+    // -------------------------- Protocol-owned state --------------------------
+    // The state lifecycle == this protocol instance lifecycle.
+    // If your RPC server creates a new protocol instance per request, state will reset.
+    private final Map<String, Object> stateRaw = new LinkedHashMap<>();
+    private String stateFingerprint = StateFingerprint.fingerprintRawState(stateRaw);
 
     private static final Pattern INCLUDE =
             Pattern.compile("^\\s*#include\\s+\"([^\"]+)\"\\s*$");
@@ -51,14 +62,56 @@ public final class ElaraEngineProtocol {
         this.log = log;
     }
 
+    // -------------------------- State lifecycle API --------------------------
+
+    /** Clear all retained state for this protocol instance. */
+    public synchronized void resetState() {
+        stateRaw.clear();
+        stateFingerprint = StateFingerprint.fingerprintRawState(stateRaw);
+    }
+
+    /** Replace retained state from JSON (useful when loading an app/session). */
+    public synchronized void loadStateJson(String stateJson) {
+        if (stateJson == null || stateJson.trim().isEmpty()) {
+            resetState();
+            return;
+        }
+        ElaraStateStore s = ElaraStateStore.fromJson(stateJson);
+        stateRaw.clear();
+        stateRaw.putAll(s.toRawInputs());
+        stateFingerprint = StateFingerprint.fingerprintRawState(stateRaw);
+    }
+
+    /** Returns the last known fingerprint of retained state. */
+    public synchronized String getStateFingerprint() {
+        return stateFingerprint;
+    }
+
+    /** Returns a defensive copy of the retained raw state. */
+    public synchronized Map<String, Object> snapshotStateRaw() {
+        return new LinkedHashMap<>(stateRaw);
+    }
+
     // -------------------------- Public API --------------------------
 
+    /**
+     * Dispatch an event into the script engine.
+     *
+     * IMPORTANT:
+     * - This method uses and updates protocol-owned state (stateRaw).
+     * - It does NOT accept caller-provided stateJson/patch; state comes from this instance.
+     *
+     * Returns a channel-safe map:
+     *   {
+     *     "patch": { "set": [[k,v],...], "remove": [k,...] },
+     *     "commands": [...],
+     *     "fingerprint": "<md5>"
+     *   }
+     */
     @SuppressWarnings("unchecked")
-    public Map<String, Object> dispatchEvent(
-            String stateJson,
+    public synchronized Map<String, Object> dispatchEvent(
             String appScript,
-            Map<String, Object> event,
-            Object patchObj
+            Map<String, Object> event
     ) {
         if (appScript == null || appScript.trim().isEmpty()) {
             throw new IllegalArgumentException("appScript required");
@@ -67,42 +120,10 @@ public final class ElaraEngineProtocol {
             throw new IllegalArgumentException("event required");
         }
 
-        // --- Load/resolve state ---
-        // Full state wins: replace entirely.
-        ElaraStateStore store;
-        if (stateJson != null && !stateJson.trim().isEmpty()) {
-            store = ElaraStateStore.fromJson(stateJson);
-        } else {
-            store = new ElaraStateStore();
+        // --- Baseline is protocol-owned state (snapshot for diff) ---
+        Map<String, Object> rawInputs = new LinkedHashMap<>(stateRaw);
 
-            // Apply patch only when full state isn't provided
-            if (patchObj != null) {
-                if (!(patchObj instanceof List)) {
-                    throw new IllegalArgumentException("patch must be a List of [key,value] pairs");
-                }
-                List<?> patch = (List<?>) patchObj;
-                for (Object entryObj : patch) {
-                    if (!(entryObj instanceof List)) {
-                        throw new IllegalArgumentException("patch entry must be [key,value]");
-                    }
-                    List<?> entry = (List<?>) entryObj;
-                    if (entry.size() != 2 || !(entry.get(0) instanceof String)) {
-                        throw new IllegalArgumentException("patch entry must be [String key, value]");
-                    }
-                    String key = (String) entry.get(0);
-                    Object val = entry.get(1);
-
-                    // NOTE: you already call store.putRaw(...) in MainActivity.
-                    // If ElaraStateStore doesn't have it, replace with: store.toRawInputs().put(...) pattern,
-                    // or add putRaw(key,val) to ElaraStateStore.
-                    store.putRaw(key, val);
-                }
-            }
-        }
-
-        Map<String, Object> rawInputs = store.toRawInputs();
-
-        // Build env for script
+        // Build env for script from baseline
         Map<String, ElaraScript.Value> initialEnv = new LinkedHashMap<>();
         for (Map.Entry<String, Object> e : rawInputs.entrySet()) {
             initialEnv.put(e.getKey(), coerceAnyToValue(e.getValue()));
@@ -175,6 +196,11 @@ public final class ElaraEngineProtocol {
         // diff/fingerprint
         Map<String, Object> diff = StateDiff.diff(rawInputs, raw).toPatchObject();
         String fp = StateFingerprint.fingerprintRawState(raw);
+
+        // Update protocol-owned state to match the engine output (state lifecycle == protocol lifecycle)
+        stateRaw.clear();
+        stateRaw.putAll(raw);
+        stateFingerprint = fp;
 
         Object cmdsObj = raw.get("__commands");
         List<Object> commandsList = (cmdsObj instanceof List) ? (List<Object>) cmdsObj : new ArrayList<>();
@@ -316,7 +342,6 @@ public final class ElaraEngineProtocol {
     }
 
     /**
-     * Same conversion you already use in MainActivity.
      * Supported: null, boolean, number, string, List (array), numeric List<List> (matrix), Map (map)
      */
     @SuppressWarnings("unchecked")
