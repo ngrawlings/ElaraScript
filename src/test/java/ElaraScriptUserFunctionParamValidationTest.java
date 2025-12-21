@@ -191,5 +191,64 @@ public class ElaraScriptUserFunctionParamValidationTest {
                 () -> "Expected error mentioning admin/active invariant. Errors: " + bad.errors()
         );
     }
+    
+    @Test
+    void userFuncParam_withRequiredSuffix_routesToTypeFunction_whenNoShapeRegistered() {
+        ElaraScript es = new ElaraScript();
+
+        // Top-level runner shape: provide input "u" and output "out"
+        ElaraDataShaper.Shape<Value> top = new ElaraDataShaper.Shape<>();
+        top.input("u", ElaraDataShaper.Type.MAP).required(true);
+        top.output("out", ElaraDataShaper.Type.NUMBER).required(true);
+        es.dataShaping().register("top", top);
+
+        // No DataShape registered for "user" on purpose.
+        // Define ES validator: type_user(v) -> true/false
+        String src = """
+            function type_user(v) {
+                // require v.profile.id == 42
+                if (v == null) return false;
+                let p = v["profile"];
+                if (p == null) return false;
+                return p["id"] == 42;
+            }
+
+            function f(user_payload??) {
+                // If validation passed, user_payload is available (bound without ??)
+                return user_payload["profile"]["id"];
+            }
+
+            let out = f(u);
+            """;
+
+        // --- Case 1: valid payload -> should pass via type_user() fallback
+        Map<String, Object> okRaw = Map.of(
+                "u", (Object) Map.of(
+                        "profile", Map.of("id", 42, "name", "alice"),
+                        "roles", java.util.List.of()
+                )
+        );
+
+        ElaraDataShaper.RunResult<Value> ok = es.runShaped(src, "top", okRaw, false);
+        assertTrue(ok.ok(), () -> "Expected success via type_user() fallback. Errors: " + ok.errors());
+        assertEquals(42.0, ok.outputs().get("out").asNumber(), 0.0);
+
+        // --- Case 2: invalid payload -> should fail via type_user() fallback
+        Map<String, Object> badRaw = Map.of(
+                "u", (Object) Map.of(
+                        "profile", Map.of("id", 7, "name", "alice"),
+                        "roles", java.util.List.of()
+                )
+        );
+
+        ElaraDataShaper.RunResult<Value> bad = es.runShaped(src, "top", badRaw, false);
+        assertFalse(bad.ok(), "Expected failure because type_user() returns false");
+        String errs = bad.errors().toString().toLowerCase();
+        assertTrue(
+                errs.contains("type_") || errs.contains("validation") || errs.contains("user"),
+                () -> "Expected error mentioning type_user/validation/user. Errors: " + bad.errors()
+        );
+    }
+
 
 }

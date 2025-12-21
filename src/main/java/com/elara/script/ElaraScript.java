@@ -1120,6 +1120,38 @@ public class ElaraScript {
 
             boolean exists = shapingRegistry.has(match);
             if (!exists) {
+            	String fn = "type_" + match;
+  
+                String typeFn = "type_" + match;
+                boolean fnExists = userFunctions.containsKey(typeFn) || functions.containsKey(typeFn);
+
+                if (fnExists) {
+                	// Call the ES validator function with the argument as the only parameter.
+                    Value res = invokeByName(typeFn, List.of(arg));
+
+                    // Convention:
+                    // - true  => ok
+                    // - false => fail
+                    // - array => fail with details (anything else is an error)
+                    if (res.getType() == Value.Type.BOOL) {
+                        if (res.asBool()) return arg;
+
+                        reportSystemError("type_validation", typeFn, null,
+                                    "type validator returned false for " + fnName + "(" + paramLexeme + ")");
+                        throw new RuntimeException("Type validation failed: " + match);
+                    }
+
+                    if (res.getType() == Value.Type.ARRAY) {
+                        reportSystemError("type_validation", typeFn, null,
+                                    "type validator returned errors for " + fnName + "(" + paramLexeme + "): " + res);
+                        throw new RuntimeException("Type validation failed: " + res);
+                    }
+
+                    reportSystemError("type_validation", typeFn, null,
+                                "type validator must return bool or array, got " + res.getType());
+                    throw new RuntimeException("Invalid return from " + typeFn + ": " + res.getType());
+                }
+                
                 if (required) {
                     reportSystemError("shape_not_found", match, null,
                             "Missing required validator '" + match + "' for " + fnName + "(" + paramLexeme + ")");
