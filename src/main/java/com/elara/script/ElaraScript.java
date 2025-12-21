@@ -1,9 +1,12 @@
 package com.elara.script;
 
+import com.elara.script.shaping.ElaraDataShaper;
+
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Core ElaraScript engine (v2 with DataShape).
+ * Core ElaraScript engine.
  *
  * - JavaScript-like syntax (let / if / else / while / for / && / || / == / != / + - * / %)
  * - Types: number (double), bool, string, bytes, array, matrix, null
@@ -17,7 +20,6 @@ import java.util.*;
  *     - STRICT (default): only direct function calls
  *     - INFERENCE: allows dynamic dispatch via call("fnName", ...args)
  *                  and var-held function names: let f="add"; f(1,2)
- * - Data shaping/validation available via DataShape + run(...)
  */
 public class ElaraScript {
 
@@ -124,6 +126,77 @@ public class ElaraScript {
     /** Functional interface for built-in functions. */
     public interface BuiltinFunction {
         Value call(List<Value> args);
+    }
+
+    // ===================== DATA SHAPING (REGISTRY-BASED) =====================
+
+    /** Bridges ElaraScript.Value <-> ElaraDataShaper without coupling the shaper to interpreter internals. */
+    private static final ElaraDataShaper.ValueAdapter<Value> VALUE_ADAPTER = new ElaraDataShaper.ValueAdapter<Value>() {
+        @Override
+        public ElaraDataShaper.Type typeOf(Value v) {
+            if (v == null) return ElaraDataShaper.Type.NULL;
+            switch (v.getType()) {
+                case NUMBER: return ElaraDataShaper.Type.NUMBER;
+                case BOOL:   return ElaraDataShaper.Type.BOOL;
+                case STRING: return ElaraDataShaper.Type.STRING;
+                case BYTES:  return ElaraDataShaper.Type.BYTES;
+                case ARRAY:  return ElaraDataShaper.Type.ARRAY;
+                case MATRIX: return ElaraDataShaper.Type.MATRIX;
+                case MAP:    return ElaraDataShaper.Type.MAP;
+                case NULL:
+                default:     return ElaraDataShaper.Type.NULL;
+            }
+        }
+
+        @Override public double asNumber(Value v) { return v.asNumber(); }
+        @Override public boolean asBool(Value v) { return v.asBool(); }
+        @Override public String asString(Value v) { return v.asString(); }
+        @Override public byte[] asBytes(Value v) { return v.asBytes(); }
+
+        @Override public List<Value> asArray(Value v) { return v.asArray(); }
+        @Override public List<List<Value>> asMatrix(Value v) { return v.asMatrix(); }
+        @Override public Map<String, Value> asMap(Value v) { return v.asMap(); }
+
+        @Override public Value number(double d) { return Value.number(d); }
+        @Override public Value bool(boolean b) { return Value.bool(b); }
+        @Override public Value string(String s) { return Value.string(s); }
+        @Override public Value bytes(byte[] b) { return Value.bytes(b); }
+        @Override public Value array(List<Value> a) { return Value.array(a); }
+        @Override public Value matrix(List<List<Value>> m) { return Value.matrix(m); }
+        @Override public Value map(Map<String, Value> m) { return Value.map(m); }
+        @Override public Value nil() { return Value.nil(); }
+    };
+
+    /**
+     * Registry of named shapes.
+     *
+     * This replaces the legacy embedded DataShape/FieldSpec/etc inside ElaraScript.
+     * Shapes live outside the interpreter and can be shared across apps.
+     */
+    public static final class DataShapingRegistry {
+        private final Map<String, ElaraDataShaper.Shape<Value>> shapes = new ConcurrentHashMap<>();
+        private final ElaraDataShaper<Value> shaper = new ElaraDataShaper<>(VALUE_ADAPTER);
+
+        public void register(String name, ElaraDataShaper.Shape<Value> shape) {
+            if (name == null || name.trim().isEmpty()) throw new IllegalArgumentException("shape name required");
+            if (shape == null) throw new IllegalArgumentException("shape must not be null");
+            shapes.put(name.trim(), shape);
+        }
+
+        public boolean has(String name) {
+            if (name == null) return false;
+            return shapes.containsKey(name.trim());
+        }
+
+        public ElaraDataShaper.Shape<Value> get(String name) {
+            if (name == null || name.trim().isEmpty()) throw new IllegalArgumentException("shape name required");
+            ElaraDataShaper.Shape<Value> s = shapes.get(name.trim());
+            if (s == null) throw new IllegalArgumentException("Unknown shape: " + name);
+            return s;
+        }
+
+        public ElaraDataShaper<Value> shaper() { return shaper; }
+        public Map<String, ElaraDataShaper.Shape<Value>> snapshot() { return Collections.unmodifiableMap(new LinkedHashMap<>(shapes)); }
     }
 
     /** Simple call frame for stack tracking. */
@@ -365,7 +438,11 @@ public class ElaraScript {
         private boolean isAlpha(char c) {
             return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
         }
-        private boolean isAlphaNumeric(char c) { return isAlpha(c) || isDigit(c); }
+        private boolean isAlphaNumeric(char c) {
+            // Allow '?' inside identifiers so user-function parameters can carry
+            // validation hints like: shape_param??
+            return isAlpha(c) || isDigit(c) || c == '?';
+        }
 
         private void addToken(TokenType type) { addToken(type, null); }
         private void addToken(TokenType type, Object literal) {
@@ -1001,18 +1078,72 @@ public class ElaraScript {
     private static final class Interpreter implements ExprVisitor<Value>, StmtVisitor {
         private Environment env;
         private final Map<String, BuiltinFunction> functions;
+        private final DataShapingRegistry shapingRegistry;
         private final Map<String, UserFunction> userFunctions = new LinkedHashMap<>();
         private final Deque<CallFrame> callStack = new ArrayDeque<CallFrame>();
         private final int maxDepth;
         private final Mode mode;
         private final SystemErrorReporter errorReporter;
 
-        Interpreter(Environment env, Map<String, BuiltinFunction> functions, int maxDepth, Mode mode, SystemErrorReporter errorReporter) {
+        Interpreter(Environment env, Map<String, BuiltinFunction> functions, DataShapingRegistry shapingRegistry, int maxDepth, Mode mode, SystemErrorReporter errorReporter) {
             this.env = env;
             this.functions = functions;
+            this.shapingRegistry = shapingRegistry;
             this.maxDepth = maxDepth;
             this.mode = (mode == null) ? Mode.STRICT : mode;
             this.errorReporter = errorReporter;
+        }
+
+        /**
+         * Apply automatic validation on user-function arguments based on the parameter naming convention:
+         *
+         *   <validatorName>_<anything>??  -> validate REQUIRED (throw if validator missing)
+         *   <validatorName>_<anything>    -> validate IF validator exists (skip if missing)
+         *   no_validation                 -> always skip validation for this parameter
+         *
+         * Only the substring before the first '_' participates in validator lookup.
+         */
+        private Value maybeValidateUserArg(String fnName, String paramLexeme, Value arg) {
+            if (shapingRegistry == null || paramLexeme == null) return arg;
+
+            String raw = paramLexeme;
+            if ("no_validation".equals(raw)) return arg;
+
+            boolean required = raw.endsWith("??");
+            if (required) raw = raw.substring(0, raw.length() - 2);
+
+            String match = raw;
+            int us = raw.indexOf('_');
+            if (us >= 0) match = raw.substring(0, us);
+            match = match.trim();
+            if (match.isEmpty() || "no_validation".equals(match)) return arg;
+
+            boolean exists = shapingRegistry.has(match);
+            if (!exists) {
+                if (required) {
+                    reportSystemError("shape_not_found", match, null,
+                            "Missing required validator '" + match + "' for " + fnName + "(" + paramLexeme + ")");
+                    throw new RuntimeException("Missing required validator: " + match);
+                }
+                return arg;
+            }
+
+            ElaraDataShaper.Shape<Value> shape = shapingRegistry.get(match);
+            if (shape.inputs().isEmpty()) {
+                reportSystemError("shape_invalid", match, null,
+                        "Validator shape '" + match + "' must declare at least one input field");
+                throw new RuntimeException("Validator shape has no input fields: " + match);
+            }
+
+            // For argument validation we treat the first input field spec as the value contract.
+            ElaraDataShaper.FieldSpec<Value> spec = shape.inputs().values().iterator().next();
+            List<ElaraDataShaper.ValidationError> errs = shapingRegistry.shaper().validate(spec, arg, shape, fnName + "." + paramLexeme);
+            if (!errs.isEmpty()) {
+                String msg = errs.get(0).toString();
+                reportSystemError("shape_validation", match, null, msg);
+                throw new RuntimeException(msg);
+            }
+            return arg;
         }
 
 
@@ -1502,7 +1633,11 @@ public class ElaraScript {
                 interpreter.env = new Environment(closure);
                 try {
                     for (int i = 0; i < params.size(); i++) {
-                        interpreter.env.define(params.get(i).lexeme, args.get(i));
+                        String p = params.get(i).lexeme;
+                        Value v = args.get(i);
+                        // Optional, name-driven validation/coercion hook.
+                        v = interpreter.maybeValidateUserArg(name, p, v);
+                        interpreter.env.define(p, v);
                     }
 
                     try {
@@ -1536,6 +1671,9 @@ public class ElaraScript {
     private int maxCallDepth = 64;
     private Mode mode = Mode.STRICT;
 
+    /** Registry for DataShaper-based shaping/validation (replacement for legacy DataShape). */
+    private final DataShapingRegistry dataShaping = new DataShapingRegistry();
+
 
     // ===================== SYSTEM ERROR CALLBACK (HOST-REGISTERED) =====================
     // The interpreter core must not hardcode any ES function names.
@@ -1558,7 +1696,6 @@ public class ElaraScript {
      * This applies to:
      *   - run(...)
      *   - runWithEntryResult(...)
-     *   - DataShape execution
      *
      * Any change to this behavior MUST update unit tests.
      */
@@ -1578,6 +1715,60 @@ public class ElaraScript {
     public Mode getMode() { return mode; }
 
     public void registerFunction(String name, BuiltinFunction fn) { functions.put(name, fn); }
+
+    /** Access the named-shape registry used by the New DataShaper pipeline. */
+    public DataShapingRegistry dataShaping() { return dataShaping; }
+
+    /**
+     * Run a shaped pipeline using a named shape registered in {@link #dataShaping()}.
+     *
+     * Pipeline:
+     *  1) rawInputs -> initial env (coerce/validate)
+     *  2) execute the script (globals + entry invocation)
+     *  3) validate/extract declared outputs from the resulting env snapshot
+     */
+    public ElaraDataShaper.RunResult<Value> runShaped(
+            String source,
+            String shapeName,
+            Map<String, Object> rawInputs,
+            String entryFunctionName,
+            List<Value> entryArgs,
+            boolean includeDebugEnv
+    ) {
+        ElaraDataShaper.Shape<Value> shape = dataShaping.get(shapeName);
+        ElaraDataShaper<Value> shaper = dataShaping.shaper();
+
+        return shaper.run(
+                shape,
+                rawInputs,
+                (initialEnv) -> {
+                    EntryRunResult rr = runWithEntryResult(source, entryFunctionName, entryArgs, initialEnv);
+                    return rr.env();
+                },
+                includeDebugEnv
+        );
+    }
+
+    /**
+     * Same as {@link #runShaped(String, String, Map, String, List, boolean)} but runs globals only (no entry call).
+     * Useful when the script itself sets output variables at top-level.
+     */
+    public ElaraDataShaper.RunResult<Value> runShaped(
+            String source,
+            String shapeName,
+            Map<String, Object> rawInputs,
+            boolean includeDebugEnv
+    ) {
+        ElaraDataShaper.Shape<Value> shape = dataShaping.get(shapeName);
+        ElaraDataShaper<Value> shaper = dataShaping.shaper();
+
+        return shaper.run(
+                shape,
+                rawInputs,
+                (initialEnv) -> run(source, initialEnv),
+                includeDebugEnv
+        );
+    }
 
     public Map<String, Value> run(String source) {
         Environment env = new Environment();
@@ -1612,7 +1803,7 @@ public class ElaraScript {
         List<Token> tokens = lexer.tokenize();
         Parser parser = new Parser(tokens);
         List<Stmt> program = parser.parse();
-        Interpreter interpreter = new Interpreter(env, functions, maxCallDepth, mode, this::onInterpreterError);
+        Interpreter interpreter = new Interpreter(env, functions, dataShaping, maxCallDepth, mode, this::onInterpreterError);
         try {
             interpreter.execute(program);
         } catch (RuntimeException e) {
@@ -1673,7 +1864,7 @@ public class ElaraScript {
         Parser parser = new Parser(tokens);
         List<Stmt> program = parser.parse();
 
-        Interpreter interpreter = new Interpreter(env, functions, maxCallDepth, mode, this::onInterpreterError);
+        Interpreter interpreter = new Interpreter(env, functions, dataShaping, maxCallDepth, mode, this::onInterpreterError);
 
         try {
             // 1) Run globals: defines functions + executes any top-level statements.
@@ -1898,469 +2089,6 @@ public class ElaraScript {
             return Value.bool(m.remove(kv.asString()) != null);
         });
 
-    }
-
-    // ===================== DATA SHAPING / VALIDATION =====================
-
-    public static final class ValidationError {
-        public final String field;
-        public final String message;
-
-        public ValidationError(String field, String message) {
-            this.field = field;
-            this.message = message;
-        }
-
-        @Override
-        public String toString() { return field + ": " + message; }
-    }
-
-    public static final class RunResult {
-        private final boolean ok;
-        private final Map<String, Value> outputs;
-        private final List<ValidationError> errors;
-        private final Map<String, Value> debugEnv;
-
-        private RunResult(boolean ok, Map<String, Value> outputs, List<ValidationError> errors, Map<String, Value> debugEnv) {
-            this.ok = ok;
-            this.outputs = outputs;
-            this.errors = errors;
-            this.debugEnv = debugEnv;
-        }
-
-        public boolean ok() { return ok; }
-        public Map<String, Value> outputs() { return outputs; }
-        public List<ValidationError> errors() { return errors; }
-        public Map<String, Value> debugEnv() { return debugEnv; }
-    }
-
-    public static final class FieldSpec {
-        public enum Kind { INPUT, OUTPUT }
-
-        public final Kind kind;
-        public final String name;
-        public final Value.Type type;
-
-        public boolean required;
-        public Value defaultValue;
-
-        public Double min;
-        public Double max;
-        public boolean integerOnly;
-
-        public Integer minLen;
-        public Integer maxLen;
-        public String regex;
-
-        public Integer minItems;
-        public Integer maxItems;
-        public Value.Type elementType;
-        public Double elementMin;
-        public Double elementMax;
-
-        public Integer minRows;
-        public Integer maxRows;
-        public Integer minCols;
-        public Integer maxCols;
-        public Integer maxCells;
-
-        public boolean coerceFromString = true;
-
-        private FieldSpec(Kind kind, String name, Value.Type type) {
-            this.kind = kind;
-            this.name = name;
-            this.type = type;
-        }
-
-        public FieldSpec required(boolean required) { this.required = required; return this; }
-        public FieldSpec defaultValue(Value v) { this.defaultValue = v; return this; }
-
-        public FieldSpec min(double v) { this.min = v; return this; }
-        public FieldSpec max(double v) { this.max = v; return this; }
-        public FieldSpec integerOnly(boolean v) { this.integerOnly = v; return this; }
-
-        public FieldSpec minLen(int v) { this.minLen = v; return this; }
-        public FieldSpec maxLen(int v) { this.maxLen = v; return this; }
-        public FieldSpec regex(String v) { this.regex = v; return this; }
-
-        public FieldSpec minItems(int v) { this.minItems = v; return this; }
-        public FieldSpec maxItems(int v) { this.maxItems = v; return this; }
-        public FieldSpec elementType(Value.Type t) { this.elementType = t; return this; }
-        public FieldSpec elementMin(double v) { this.elementMin = v; return this; }
-        public FieldSpec elementMax(double v) { this.elementMax = v; return this; }
-
-        public FieldSpec minRows(int v) { this.minRows = v; return this; }
-        public FieldSpec maxRows(int v) { this.maxRows = v; return this; }
-        public FieldSpec minCols(int v) { this.minCols = v; return this; }
-        public FieldSpec maxCols(int v) { this.maxCols = v; return this; }
-        public FieldSpec maxCells(int v) { this.maxCells = v; return this; }
-
-        public FieldSpec coerceFromString(boolean v) { this.coerceFromString = v; return this; }
-    }
-
-    public static final class DataShape {
-        private final LinkedHashMap<String, FieldSpec> inputs = new LinkedHashMap<>();
-        private final LinkedHashMap<String, FieldSpec> outputs = new LinkedHashMap<>();
-
-        public int maxStringLength = 8_192;
-        public int maxBytesLength = 1_000_000;
-        public int maxArrayLength = 10_000;
-        public int maxMapItems = 10_000;
-        public int maxMatrixCells = 250_000;
-
-        public FieldSpec input(String name, Value.Type type) {
-            FieldSpec fs = new FieldSpec(FieldSpec.Kind.INPUT, name, type);
-            inputs.put(name, fs);
-            return fs;
-        }
-
-        public FieldSpec output(String name, Value.Type type) {
-            FieldSpec fs = new FieldSpec(FieldSpec.Kind.OUTPUT, name, type);
-            outputs.put(name, fs);
-            return fs;
-        }
-
-        public FieldSpec inputNumber(String name, boolean required, Double min, Double max) {
-            FieldSpec fs = input(name, Value.Type.NUMBER).required(required);
-            if (min != null) fs.min(min);
-            if (max != null) fs.max(max);
-            return fs;
-        }
-
-        public FieldSpec outputNumber(String name, boolean required, Double min, Double max) {
-            FieldSpec fs = output(name, Value.Type.NUMBER).required(required);
-            if (min != null) fs.min(min);
-            if (max != null) fs.max(max);
-            return fs;
-        }
-
-        public Map<String, FieldSpec> inputs() { return Collections.unmodifiableMap(inputs); }
-        public Map<String, FieldSpec> outputs() { return Collections.unmodifiableMap(outputs); }
-    }
-
-    public RunResult run(String source, DataShape shape, Map<String, Object> rawInputs) {
-        return run(source, shape, rawInputs, false);
-    }
-
-    public RunResult run(String source, DataShape shape, Map<String, Object> rawInputs, boolean includeDebugEnv) {
-        if (shape == null) throw new IllegalArgumentException("DataShape must not be null");
-        if (rawInputs == null) rawInputs = Collections.emptyMap();
-
-        List<ValidationError> errors = new ArrayList<>();
-        Map<String, Value> initialEnv = new LinkedHashMap<>();
-
-        for (FieldSpec spec : shape.inputs().values()) {
-            Object raw = rawInputs.get(spec.name);
-            if (raw == null) {
-                if (spec.defaultValue != null) initialEnv.put(spec.name, spec.defaultValue);
-                else if (spec.required) errors.add(new ValidationError(spec.name, "Missing required input"));
-                continue;
-            }
-
-            Value coerced;
-            try {
-                coerced = coerceRawToValue(spec, raw, shape);
-            } catch (RuntimeException ex) {
-                errors.add(new ValidationError(spec.name, ex.getMessage()));
-                continue;
-            }
-
-            validateValue(spec, coerced, shape, errors);
-            if (errors.isEmpty()) initialEnv.put(spec.name, coerced);
-        }
-
-        if (!errors.isEmpty()) {
-            return new RunResult(false, Collections.emptyMap(), errors, includeDebugEnv ? initialEnv : null);
-        }
-
-        Map<String, Value> fullEnv;
-        try {
-            fullEnv = run(source, initialEnv);
-        } catch (RuntimeException ex) {
-            errors.add(new ValidationError("$runtime", ex.getMessage() == null ? "Runtime error" : ex.getMessage()));
-            return new RunResult(false, Collections.emptyMap(), errors, includeDebugEnv ? initialEnv : null);
-        }
-
-        Map<String, Value> out = new LinkedHashMap<>();
-        for (FieldSpec spec : shape.outputs().values()) {
-            Value val = fullEnv.get(spec.name);
-            if (val == null) {
-                if (spec.required) errors.add(new ValidationError(spec.name, "Missing required output"));
-                continue;
-            }
-            validateValue(spec, val, shape, errors);
-            if (errors.isEmpty()) out.put(spec.name, val);
-        }
-
-        boolean ok = errors.isEmpty();
-        return new RunResult(ok, ok ? out : Collections.emptyMap(), errors, includeDebugEnv ? fullEnv : null);
-    }
-
-    private static Value coerceRawToValue(FieldSpec spec, Object raw, DataShape shape) {
-        if (raw instanceof String && spec.coerceFromString) {
-            String s = ((String) raw).trim();
-            switch (spec.type) {
-                case NUMBER:
-                    try { return Value.number(Double.parseDouble(s)); }
-                    catch (NumberFormatException nfe) { throw new RuntimeException("Cannot parse number from string"); }
-                case BOOL:
-                    if ("true".equalsIgnoreCase(s)) return Value.bool(true);
-                    if ("false".equalsIgnoreCase(s)) return Value.bool(false);
-                    throw new RuntimeException("Cannot parse bool from string");
-                case STRING:
-                    return Value.string((String) raw);
-                default:
-                    break;
-            }
-        }
-
-        switch (spec.type) {
-            case NUMBER:
-                if (raw instanceof Number) return Value.number(((Number) raw).doubleValue());
-                throw new RuntimeException("Expected number");
-            case BOOL:
-                if (raw instanceof Boolean) return Value.bool((Boolean) raw);
-                if (raw instanceof byte[]) {
-                    byte[] b = (byte[]) raw;
-                    if (b.length > shape.maxBytesLength) throw new RuntimeException("Bytes too large");
-                    return Value.bytes(b);
-                }
-                throw new RuntimeException("Expected bool");
-            case STRING:
-                if (raw instanceof String) return Value.string((String) raw);
-                throw new RuntimeException("Expected string");
-            case BYTES:
-                if (raw instanceof byte[]) {
-                    byte[] b = (byte[]) raw;
-                    if (b.length > shape.maxBytesLength) throw new RuntimeException("Bytes too large (max " + shape.maxBytesLength + ")");
-                    return Value.bytes(b);
-                }
-                if (raw instanceof java.nio.ByteBuffer) {
-                    java.nio.ByteBuffer bb = (java.nio.ByteBuffer) raw;
-                    java.nio.ByteBuffer dup = bb.slice();
-                    byte[] out = new byte[dup.remaining()];
-                    dup.get(out);
-                    if (out.length > shape.maxBytesLength) throw new RuntimeException("Bytes too large (max " + shape.maxBytesLength + ")");
-                    return Value.bytes(out);
-                }
-                if (raw instanceof List) {
-                    List<?> list = (List<?>) raw;
-                    if (list.size() > shape.maxBytesLength) throw new RuntimeException("Bytes too large (max " + shape.maxBytesLength + ")");
-                    byte[] out = new byte[list.size()];
-                    for (int i = 0; i < list.size(); i++) {
-                        Object item = list.get(i);
-                        if (!(item instanceof Number)) throw new RuntimeException("Bytes list elements must be numbers 0..255");
-                        int v = ((Number) item).intValue();
-                        if (v < 0 || v > 255) throw new RuntimeException("Byte value out of range at index " + i);
-                        out[i] = (byte) v;
-                    }
-                    return Value.bytes(out);
-                }
-                throw new RuntimeException("Expected bytes (byte[] / ByteBuffer / List<Number>)");
-            case ARRAY:
-                if (!(raw instanceof List)) throw new RuntimeException("Expected array/list");
-                return Value.array(coerceList((List<?>) raw, spec, shape));
-            case MATRIX:
-                if (!(raw instanceof List)) throw new RuntimeException("Expected matrix/list of rows");
-                return Value.matrix(coerceMatrix((List<?>) raw, spec, shape));
-            case MAP:
-                if (!(raw instanceof Map)) throw new RuntimeException("Expected map/object");
-                @SuppressWarnings("unchecked")
-                Map<String, Object> rm = (Map<String, Object>) raw;
-                if (rm.size() > shape.maxMapItems) throw new RuntimeException("Map too large (max " + shape.maxMapItems + ")");
-                Map<String, Value> mv = new HashMap<>();
-                for (Map.Entry<String, Object> e : rm.entrySet()) {
-                    mv.put(e.getKey(), coerceAny(e.getValue(), shape));
-                }
-                return Value.map(mv);
-            case NULL:
-            default:
-                return Value.nil();
-        }
-    }
-
-    private static List<Value> coerceList(List<?> rawList, FieldSpec spec, DataShape shape) {
-        if (rawList.size() > shape.maxArrayLength) throw new RuntimeException("Array too large (max " + shape.maxArrayLength + ")");
-        List<Value> out = new ArrayList<>(rawList.size());
-        for (Object item : rawList) {
-            if (spec.elementType == null) {
-                out.add(coerceAny(item, shape));
-            } else {
-                FieldSpec tmp = new FieldSpec(FieldSpec.Kind.INPUT, spec.name + "[]", spec.elementType);
-                tmp.coerceFromString = spec.coerceFromString;
-                out.add(coerceRawToValue(tmp, item, shape));
-            }
-        }
-        return out;
-    }
-
-    private static List<List<Value>> coerceMatrix(List<?> rawRows, FieldSpec spec, DataShape shape) {
-        List<List<Value>> out = new ArrayList<>(rawRows.size());
-        int cols = -1;
-        int totalCells = 0;
-
-        for (Object rowObj : rawRows) {
-            if (!(rowObj instanceof List)) throw new RuntimeException("Matrix rows must be lists");
-            List<?> rawRow = (List<?>) rowObj;
-            if (cols < 0) cols = rawRow.size();
-            if (rawRow.size() != cols) throw new RuntimeException("Matrix must be rectangular");
-
-            totalCells += rawRow.size();
-            int limit = (spec.maxCells != null) ? spec.maxCells : shape.maxMatrixCells;
-            if (totalCells > limit) throw new RuntimeException("Matrix too large (max cells " + limit + ")");
-
-            Value.Type et = (spec.elementType != null) ? spec.elementType : Value.Type.NUMBER;
-            FieldSpec rowSpec = new FieldSpec(FieldSpec.Kind.INPUT, spec.name + "[][]", Value.Type.ARRAY).elementType(et);
-            rowSpec.coerceFromString = spec.coerceFromString;
-
-            out.add(coerceList(rawRow, rowSpec, shape));
-        }
-
-        return out;
-    }
-
-    private static Value coerceAny(Object raw, DataShape shape) {
-        if (raw == null) return Value.nil();
-        if (raw instanceof Boolean) return Value.bool((Boolean) raw);
-        if (raw instanceof byte[]) {
-            byte[] b = (byte[]) raw;
-            if (b.length > shape.maxBytesLength) throw new RuntimeException("Bytes too large");
-            return Value.bytes(b);
-        }
-        if (raw instanceof Number) return Value.number(((Number) raw).doubleValue());
-        if (raw instanceof String) {
-            String s = (String) raw;
-            if (s.length() > shape.maxStringLength) throw new RuntimeException("String too long");
-            return Value.string(s);
-        }
-        if (raw instanceof List) {
-            List<?> list = (List<?>) raw;
-            if (!list.isEmpty() && list.get(0) instanceof List) {
-                FieldSpec ms = new FieldSpec(FieldSpec.Kind.INPUT, "<matrix>", Value.Type.MATRIX);
-                return Value.matrix(coerceMatrix(list, ms, shape));
-            }
-            FieldSpec as = new FieldSpec(FieldSpec.Kind.INPUT, "<array>", Value.Type.ARRAY);
-            return Value.array(coerceList(list, as, shape));
-        }
-        if (raw instanceof Map) {
-            @SuppressWarnings("unchecked")
-            Map<String, Object> m = (Map<String, Object>) raw;
-            if (m.size() > shape.maxMapItems) throw new RuntimeException("Map too large");
-            Map<String, Value> out = new HashMap<>();
-            for (Map.Entry<String, Object> e : m.entrySet()) {
-                out.put(e.getKey(), coerceAny(e.getValue(), shape));
-            }
-            return Value.map(out);
-        }
-
-        throw new RuntimeException("Unsupported input type: " + raw.getClass().getName());
-    }
-
-    private static void validateValue(FieldSpec spec, Value v, DataShape shape, List<ValidationError> errors) {
-        if (v == null) {
-            if (spec.required) errors.add(new ValidationError(spec.name, "Value is required"));
-            return;
-        }
-        if (spec.type != v.getType()) {
-            errors.add(new ValidationError(spec.name, "Expected type " + spec.type + ", got " + v.getType()));
-            return;
-        }
-
-        switch (spec.type) {
-            case NUMBER: {
-                double d = v.asNumber();
-                if (spec.integerOnly && d != Math.rint(d)) errors.add(new ValidationError(spec.name, "Expected integer"));
-                if (spec.min != null && d < spec.min) errors.add(new ValidationError(spec.name, "Must be >= " + spec.min));
-                if (spec.max != null && d > spec.max) errors.add(new ValidationError(spec.name, "Must be <= " + spec.max));
-                break;
-            }
-            case STRING: {
-                String s = v.asString();
-                if (s.length() > shape.maxStringLength) { errors.add(new ValidationError(spec.name, "String too long")); break; }
-                if (spec.minLen != null && s.length() < spec.minLen) errors.add(new ValidationError(spec.name, "Length must be >= " + spec.minLen));
-                if (spec.maxLen != null && s.length() > spec.maxLen) errors.add(new ValidationError(spec.name, "Length must be <= " + spec.maxLen));
-                if (spec.regex != null && !s.matches(spec.regex)) errors.add(new ValidationError(spec.name, "Does not match required pattern"));
-                break;
-            }
-            case BYTES: {
-                byte[] bb = v.asBytes();
-                int n = (bb == null) ? 0 : bb.length;
-                if (n > shape.maxBytesLength) { errors.add(new ValidationError(spec.name, "Bytes too large")); break; }
-                if (spec.minLen != null && n < spec.minLen) errors.add(new ValidationError(spec.name, "Length must be >= " + spec.minLen));
-                if (spec.maxLen != null && n > spec.maxLen) errors.add(new ValidationError(spec.name, "Length must be <= " + spec.maxLen));
-                break;
-            }
-            case BOOL:
-                break;
-            case ARRAY: {
-                List<Value> list = v.asArray();
-                if (list.size() > shape.maxArrayLength) { errors.add(new ValidationError(spec.name, "Array too large")); break; }
-                if (spec.minItems != null && list.size() < spec.minItems) errors.add(new ValidationError(spec.name, "Must have at least " + spec.minItems + " items"));
-                if (spec.maxItems != null && list.size() > spec.maxItems) errors.add(new ValidationError(spec.name, "Must have at most " + spec.maxItems + " items"));
-                if (spec.elementType != null) {
-                    for (int i = 0; i < list.size(); i++) {
-                        Value item = list.get(i);
-                        if (item.getType() != spec.elementType) {
-                            errors.add(new ValidationError(spec.name, "Element[" + i + "] expected " + spec.elementType + ", got " + item.getType()));
-                            break;
-                        }
-                        if (spec.elementType == Value.Type.NUMBER) {
-                            double d = item.asNumber();
-                            if (spec.elementMin != null && d < spec.elementMin) { errors.add(new ValidationError(spec.name, "Element[" + i + "] must be >= " + spec.elementMin)); break; }
-                            if (spec.elementMax != null && d > spec.elementMax) { errors.add(new ValidationError(spec.name, "Element[" + i + "] must be <= " + spec.elementMax)); break; }
-                        }
-                    }
-                }
-                break;
-            }
-            case MATRIX: {
-                List<List<Value>> rows = v.asMatrix();
-                int r = rows.size();
-                if (spec.minRows != null && r < spec.minRows) errors.add(new ValidationError(spec.name, "Rows must be >= " + spec.minRows));
-                if (spec.maxRows != null && r > spec.maxRows) errors.add(new ValidationError(spec.name, "Rows must be <= " + spec.maxRows));
-
-                int c = (r == 0) ? 0 : rows.get(0).size();
-                for (int i = 0; i < r; i++) {
-                    if (rows.get(i).size() != c) { errors.add(new ValidationError(spec.name, "Matrix must be rectangular")); return; }
-                }
-
-                if (spec.minCols != null && c < spec.minCols) errors.add(new ValidationError(spec.name, "Cols must be >= " + spec.minCols));
-                if (spec.maxCols != null && c > spec.maxCols) errors.add(new ValidationError(spec.name, "Cols must be <= " + spec.maxCols));
-
-                int cells = r * c;
-                int limit = (spec.maxCells != null) ? spec.maxCells : shape.maxMatrixCells;
-                if (cells > limit) errors.add(new ValidationError(spec.name, "Matrix too large"));
-
-                Value.Type et = (spec.elementType != null) ? spec.elementType : Value.Type.NUMBER;
-                for (int i = 0; i < r; i++) {
-                    for (int j = 0; j < c; j++) {
-                        if (rows.get(i).get(j).getType() != et) {
-                            errors.add(new ValidationError(spec.name, "Element[" + i + "," + j + "] expected " + et + ", got " + rows.get(i).get(j).getType()));
-                            return;
-                        }
-                    }
-                }
-                break;
-            }
-            case MAP: {
-                Map<String, Value> m = v.asMap();
-                int n = (m == null) ? 0 : m.size();
-                if (n > shape.maxMapItems) { errors.add(new ValidationError(spec.name, "Map too large")); break; }
-                if (spec.minItems != null && n < spec.minItems) errors.add(new ValidationError(spec.name, "Must have at least " + spec.minItems + " entries"));
-                if (spec.maxItems != null && n > spec.maxItems) errors.add(new ValidationError(spec.name, "Must have at most " + spec.maxItems + " entries"));
-                if (spec.elementType != null && m != null) {
-                    for (Map.Entry<String, Value> e : m.entrySet()) {
-                        if (e.getValue() == null || e.getValue().getType() != spec.elementType) {
-                            errors.add(new ValidationError(spec.name, "Map value for key '" + e.getKey() + "' expected " + spec.elementType));
-                            break;
-                        }
-                    }
-                }
-                break;
-            }
-            default:
-                break;
-        }
     }
 
     private static void requireArgCount(String name, List<Value> args, int expected) {

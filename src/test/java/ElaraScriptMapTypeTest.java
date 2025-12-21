@@ -1,7 +1,6 @@
 import com.elara.script.ElaraScript;
-import com.elara.script.ElaraScript.DataShape;
-import com.elara.script.ElaraScript.RunResult;
 import com.elara.script.ElaraScript.Value;
+import com.elara.script.shaping.ElaraDataShaper;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
@@ -31,12 +30,14 @@ public class ElaraScriptMapTypeTest {
     void script_canGetSetAndLen_onMapInput() {
         ElaraScript es = new ElaraScript();
 
-        DataShape shape = new DataShape();
-        shape.input("m", Value.Type.MAP).required(true);
-        shape.output("gotA", Value.Type.NUMBER).required(true);
-        shape.output("missing", Value.Type.NULL).required(true);
-        shape.output("afterSet", Value.Type.NUMBER).required(true);
-        shape.output("mapLen", Value.Type.NUMBER).required(true);
+        ElaraDataShaper.Shape<Value> shape = new ElaraDataShaper.Shape<>();
+        shape.input("m", ElaraDataShaper.Type.MAP).required(true);
+        shape.output("gotA", ElaraDataShaper.Type.NUMBER).required(true);
+        shape.output("missing", ElaraDataShaper.Type.NULL).required(true);
+        shape.output("afterSet", ElaraDataShaper.Type.NUMBER).required(true);
+        shape.output("mapLen", ElaraDataShaper.Type.NUMBER).required(true);
+
+        es.dataShaping().register("map_get_set_len", shape);
 
         Map<String, Object> raw = new HashMap<>();
         Map<String, Object> m = new HashMap<>();
@@ -51,7 +52,7 @@ public class ElaraScriptMapTypeTest {
             let mapLen = len(m);
         """;
 
-        RunResult rr = es.run(src, shape, raw);
+        ElaraDataShaper.RunResult<Value> rr = es.runShaped(src, "map_get_set_len", raw, false);
         assertTrue(rr.ok(), () -> "Errors: " + rr.errors());
 
         assertEquals(123.0, rr.outputs().get("gotA").asNumber(), 0.0);
@@ -64,10 +65,12 @@ public class ElaraScriptMapTypeTest {
     void script_mapAssignment_overwritesExistingKey() {
         ElaraScript es = new ElaraScript();
 
-        DataShape shape = new DataShape();
-        shape.input("m", Value.Type.MAP).required(true);
-        shape.output("v1", Value.Type.NUMBER).required(true);
-        shape.output("v2", Value.Type.NUMBER).required(true);
+        ElaraDataShaper.Shape<Value> shape = new ElaraDataShaper.Shape<>();
+        shape.input("m", ElaraDataShaper.Type.MAP).required(true);
+        shape.output("v1", ElaraDataShaper.Type.NUMBER).required(true);
+        shape.output("v2", ElaraDataShaper.Type.NUMBER).required(true);
+
+        es.dataShaping().register("map_overwrite", shape);
 
         Map<String, Object> raw = new HashMap<>();
         Map<String, Object> m = new HashMap<>();
@@ -80,7 +83,7 @@ public class ElaraScriptMapTypeTest {
             let v2 = m["k"];
         """;
 
-        RunResult rr = es.run(src, shape, raw);
+        ElaraDataShaper.RunResult<Value> rr = es.runShaped(src, "map_overwrite", raw, false);
         assertTrue(rr.ok(), () -> "Errors: " + rr.errors());
 
         assertEquals(1.0, rr.outputs().get("v1").asNumber(), 0.0);
@@ -91,9 +94,11 @@ public class ElaraScriptMapTypeTest {
     void script_nestedMap_getWorks() {
         ElaraScript es = new ElaraScript();
 
-        DataShape shape = new DataShape();
-        shape.input("m", Value.Type.MAP).required(true);
-        shape.output("x", Value.Type.NUMBER).required(true);
+        ElaraDataShaper.Shape<Value> shape = new ElaraDataShaper.Shape<>();
+        shape.input("m", ElaraDataShaper.Type.MAP).required(true);
+        shape.output("x", ElaraDataShaper.Type.NUMBER).required(true);
+
+        es.dataShaping().register("map_nested_get", shape);
 
         Map<String, Object> raw = new HashMap<>();
         Map<String, Object> inner = new HashMap<>();
@@ -108,7 +113,7 @@ public class ElaraScriptMapTypeTest {
             let x = m["inner"]["x"];
         """;
 
-        RunResult rr = es.run(src, shape, raw);
+        ElaraDataShaper.RunResult<Value> rr = es.runShaped(src, "map_nested_get", raw, false);
         assertTrue(rr.ok(), () -> "Errors: " + rr.errors());
         assertEquals(42.0, rr.outputs().get("x").asNumber(), 0.0);
     }
@@ -117,14 +122,15 @@ public class ElaraScriptMapTypeTest {
     void duplication_semantics_assignmentSharesSameMap_inScript() {
         // This test documents expected semantics:
         // `let b = a;` points to same map unless you implement an explicit clone/copy builtin.
-        // If you WANT copy-on-assign instead, tell me and I’ll adjust engine + tests.
 
         ElaraScript es = new ElaraScript();
 
-        DataShape shape = new DataShape();
-        shape.input("m", Value.Type.MAP).required(true);
-        shape.output("a", Value.Type.NUMBER).required(true);
-        shape.output("b", Value.Type.NUMBER).required(true);
+        ElaraDataShaper.Shape<Value> shape = new ElaraDataShaper.Shape<>();
+        shape.input("m", ElaraDataShaper.Type.MAP).required(true);
+        shape.output("a", ElaraDataShaper.Type.NUMBER).required(true);
+        shape.output("b", ElaraDataShaper.Type.NUMBER).required(true);
+
+        es.dataShaping().register("map_assign_share", shape);
 
         Map<String, Object> raw = new HashMap<>();
         Map<String, Object> m = new HashMap<>();
@@ -138,22 +144,23 @@ public class ElaraScriptMapTypeTest {
             let b = m2["z"];
         """;
 
-        RunResult rr = es.run(src, shape, raw);
+        ElaraDataShaper.RunResult<Value> rr = es.runShaped(src, "map_assign_share", raw, false);
         assertTrue(rr.ok(), () -> "Errors: " + rr.errors());
 
-        // If assignment shares reference, both become 999.
         assertEquals(999.0, rr.outputs().get("a").asNumber(), 0.0);
         assertEquals(999.0, rr.outputs().get("b").asNumber(), 0.0);
     }
-    
+
     @Test
     void script_canIterateMapKeys_withKeysBuiltin_andSumValues() {
         ElaraScript es = new ElaraScript();
 
-        DataShape shape = new DataShape();
-        shape.input("m", Value.Type.MAP).required(true);
-        shape.output("sum", Value.Type.NUMBER).required(true);
-        shape.output("keyCount", Value.Type.NUMBER).required(true);
+        ElaraDataShaper.Shape<Value> shape = new ElaraDataShaper.Shape<>();
+        shape.input("m", ElaraDataShaper.Type.MAP).required(true);
+        shape.output("sum", ElaraDataShaper.Type.NUMBER).required(true);
+        shape.output("keyCount", ElaraDataShaper.Type.NUMBER).required(true);
+
+        es.dataShaping().register("map_keys_sum", shape);
 
         Map<String, Object> raw = new HashMap<>();
         Map<String, Object> m = new HashMap<>();
@@ -172,20 +179,22 @@ public class ElaraScriptMapTypeTest {
             let keyCount = len(ks);
         """;
 
-        RunResult rr = es.run(src, shape, raw);
+        ElaraDataShaper.RunResult<Value> rr = es.runShaped(src, "map_keys_sum", raw, false);
         assertTrue(rr.ok(), () -> "Errors: " + rr.errors());
 
         assertEquals(60.0, rr.outputs().get("sum").asNumber(), 0.0);
         assertEquals(3.0, rr.outputs().get("keyCount").asNumber(), 0.0);
     }
-    
+
     @Test
     void builtin_mapNew_createsEmptyIndependentMap() {
         ElaraScript es = new ElaraScript();
 
-        DataShape shape = new DataShape();
-        shape.output("len1", Value.Type.NUMBER).required(true);
-        shape.output("len2", Value.Type.NUMBER).required(true);
+        ElaraDataShaper.Shape<Value> shape = new ElaraDataShaper.Shape<>();
+        shape.output("len1", ElaraDataShaper.Type.NUMBER).required(true);
+        shape.output("len2", ElaraDataShaper.Type.NUMBER).required(true);
+
+        es.dataShaping().register("map_new", shape);
 
         String src = """
             let m1 = map_new();
@@ -197,7 +206,7 @@ public class ElaraScriptMapTypeTest {
             let len2 = len(m2);
         """;
 
-        RunResult rr = es.run(src, shape, Map.of());
+        ElaraDataShaper.RunResult<Value> rr = es.runShaped(src, "map_new", Map.of(), false);
         assertTrue(rr.ok(), () -> "Errors: " + rr.errors());
 
         assertEquals(1.0, rr.outputs().get("len1").asNumber(), 0.0);
@@ -208,10 +217,12 @@ public class ElaraScriptMapTypeTest {
     void builtin_mapClone_createsShallowIndependentMap() {
         ElaraScript es = new ElaraScript();
 
-        DataShape shape = new DataShape();
-        shape.input("m", Value.Type.MAP).required(true);
-        shape.output("orig", Value.Type.NUMBER).required(true);
-        shape.output("clone", Value.Type.NUMBER).required(true);
+        ElaraDataShaper.Shape<Value> shape = new ElaraDataShaper.Shape<>();
+        shape.input("m", ElaraDataShaper.Type.MAP).required(true);
+        shape.output("orig", ElaraDataShaper.Type.NUMBER).required(true);
+        shape.output("clone", ElaraDataShaper.Type.NUMBER).required(true);
+
+        es.dataShaping().register("map_clone", shape);
 
         Map<String, Object> raw = new HashMap<>();
         Map<String, Object> m = new HashMap<>();
@@ -226,23 +237,24 @@ public class ElaraScriptMapTypeTest {
             let clone = c["x"];
         """;
 
-        RunResult rr = es.run(src, shape, raw);
+        ElaraDataShaper.RunResult<Value> rr = es.runShaped(src, "map_clone", raw, false);
         assertTrue(rr.ok(), () -> "Errors: " + rr.errors());
 
-        // Original must remain unchanged
         assertEquals(1.0, rr.outputs().get("orig").asNumber(), 0.0);
         assertEquals(999.0, rr.outputs().get("clone").asNumber(), 0.0);
     }
-    
+
     @Test
     void builtin_mapRemoveKey_removesKey_andShrinksLen() {
         ElaraScript es = new ElaraScript();
 
-        DataShape shape = new DataShape();
-        shape.output("before", Value.Type.NUMBER).required(true);
-        shape.output("removed", Value.Type.BOOL).required(true);
-        shape.output("after", Value.Type.NUMBER).required(true);
-        shape.output("missing", Value.Type.NULL).required(true);
+        ElaraDataShaper.Shape<Value> shape = new ElaraDataShaper.Shape<>();
+        shape.output("before", ElaraDataShaper.Type.NUMBER).required(true);
+        shape.output("removed", ElaraDataShaper.Type.BOOL).required(true);
+        shape.output("after", ElaraDataShaper.Type.NUMBER).required(true);
+        shape.output("missing", ElaraDataShaper.Type.NULL).required(true);
+
+        es.dataShaping().register("map_remove_key", shape);
 
         String src = """
             let m = map_new();
@@ -255,7 +267,7 @@ public class ElaraScriptMapTypeTest {
             let missing = m["a"];
         """;
 
-        RunResult rr = es.run(src, shape, Map.of());
+        ElaraDataShaper.RunResult<Value> rr = es.runShaped(src, "map_remove_key", Map.of(), false);
         assertTrue(rr.ok(), () -> "Errors: " + rr.errors());
 
         assertEquals(2.0, rr.outputs().get("before").asNumber(), 0.0);
@@ -263,6 +275,4 @@ public class ElaraScriptMapTypeTest {
         assertEquals(1.0, rr.outputs().get("after").asNumber(), 0.0);
         assertEquals(Value.Type.NULL, rr.outputs().get("missing").getType());
     }
-
-
 }

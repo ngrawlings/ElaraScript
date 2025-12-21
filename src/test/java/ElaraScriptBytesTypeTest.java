@@ -1,11 +1,11 @@
 import com.elara.script.ElaraScript;
+import com.elara.script.ElaraScript.Value;
 import com.elara.script.plugins.ElaraBinaryCodecPlugin;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
-import static com.elara.script.ElaraScript.Value;
 
 public class ElaraScriptBytesTypeTest {
 
@@ -50,7 +50,9 @@ public class ElaraScriptBytesTypeTest {
     @Test
     void binaryCodecPlugin_roundTrips_nativeBytes() {
         ElaraScript es = new ElaraScript();
-        ElaraBinaryCodecPlugin.register(es, null);
+
+        // New plugin contract: single-arg static register(engine)
+        ElaraBinaryCodecPlugin.register(es);
 
         String src = """
             function main(fmt, blob) {

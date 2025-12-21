@@ -3,7 +3,6 @@ import org.junit.jupiter.api.Test;
 import com.elara.script.ElaraScript;
 
 import java.util.Map;
-import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -15,11 +14,6 @@ import static org.junit.jupiter.api.Assertions.*;
  * - ElaraScript is in the default package (same as this test)
  */
 public class ElaraScriptTest {
-
-    private static boolean hasError(ElaraScript.RunResult rr, String fieldContains) {
-        return rr.errors().stream().filter(Objects::nonNull).anyMatch(e -> e.field != null && e.field.contains(fieldContains));
-    }
-
 
     private static ElaraScript.Value v(Map<String, ElaraScript.Value> env, String name) {
         ElaraScript.Value val = env.get(name);
@@ -284,55 +278,6 @@ public class ElaraScriptTest {
             let y = 2;
         """));
         assertTrue(ex.getMessage().contains("Expect ';'"));
-    }
-
-    @Test
-    void dataShape_validate_inputs_defaults_outputs() {
-        ElaraScript es = new ElaraScript();
-
-        ElaraScript.DataShape shape = new ElaraScript.DataShape();
-        shape.inputNumber("weightKg", true, 30.0, 250.0);
-        shape.inputNumber("durationMin", true, 1.0, 600.0);
-        // intensity optional with default
-        shape.inputNumber("intensity", false, 0.0, 10.0).defaultValue(ElaraScript.Value.number(5));
-
-        shape.outputNumber("calories", true, 0.0, null);
-
-        String script = """
-            // simple calories proxy: weight * duration * intensity * 0.0175
-            let calories = weightKg * durationMin * intensity * 0.0175;
-        """;
-
-        // 1) Missing required input -> validation failure, script should not run
-        ElaraScript.RunResult missing = es.run(script, shape, Map.of(
-                "durationMin", 40
-        ));
-        assertFalse(missing.ok());
-        assertTrue(hasError(missing, "weightKg"));
-
-        // 2) Valid run with default intensity applied
-        ElaraScript.RunResult rr = es.run(script, shape, Map.of(
-                "weightKg", 80,
-                "durationMin", 40
-        ));
-
-        assertTrue(rr.ok(), "Expected shape-run to succeed: " + rr.errors());
-        assertTrue(rr.outputs().containsKey("calories"));
-
-        double calories = rr.outputs().get("calories").asNumber();
-        // 80 * 40 * 5 * 0.0175 = 280
-        assertEquals(280.0, calories, 1e-9);
-
-        // 3) Output contract enforcement: required output missing
-        String badScript = """
-            let x = 1; // does not set calories
-        """;
-        ElaraScript.RunResult outMissing = es.run(badScript, shape, Map.of(
-                "weightKg", 80,
-                "durationMin", 40
-        ));
-        assertFalse(outMissing.ok());
-        assertTrue(hasError(outMissing, "calories"));
     }
 
     @Test

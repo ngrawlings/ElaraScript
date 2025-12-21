@@ -1,7 +1,6 @@
 import com.elara.script.ElaraScript;
-import com.elara.script.ElaraScript.DataShape;
-import com.elara.script.ElaraScript.RunResult;
 import com.elara.script.ElaraScript.Value;
+import com.elara.script.shaping.ElaraDataShaper;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -16,8 +15,10 @@ public class ElaraScriptMapLiteralTest {
     void mapLiteral_supportsNestedMapsAndEmbeddedArrays_andKeepsInsertionOrder() {
         ElaraScript es = new ElaraScript();
 
-        DataShape shape = new DataShape();
-        shape.output("out", Value.Type.MAP).required(true);
+        // New shaping system: register a named shape and run via runShaped(...)
+        ElaraDataShaper.Shape<Value> shape = new ElaraDataShaper.Shape<>();
+        shape.output("out", ElaraDataShaper.Type.MAP).required(true);
+        es.dataShaping().register("map_literal_test", shape);
 
         String src = ""
                 + "let out = {\n"
@@ -27,8 +28,8 @@ public class ElaraScriptMapLiteralTest {
                 + "  \"nested\": {\"x\": [{\"y\": true}, {\"y\": false}]}\n"
                 + "};\n";
 
-        RunResult rr = es.run(src, shape, Map.of());
-        assertTrue(rr.ok(), "Script should run successfully: " + rr.errors());
+        ElaraDataShaper.RunResult<Value> rr = es.runShaped(src, "map_literal_test", Map.of(), false);
+        assertTrue(rr.ok(), () -> "Script should run successfully: " + rr.errors());
 
         Value outV = rr.outputs().get("out");
         assertNotNull(outV);
