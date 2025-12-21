@@ -196,7 +196,7 @@ public class ElaraScript {
         LEFT_PAREN, RIGHT_PAREN,
         LEFT_BRACE, RIGHT_BRACE,
         LEFT_BRACKET, RIGHT_BRACKET,
-        COMMA, DOT, SEMICOLON,
+        COMMA, COLON, DOT, SEMICOLON,
         PLUS, MINUS, STAR, DOUBLE_STAR, SLASH, PERCENT,
 
         BANG, BANG_EQUAL,
@@ -274,6 +274,7 @@ public class ElaraScript {
                 case '[': addToken(TokenType.LEFT_BRACKET); break;
                 case ']': addToken(TokenType.RIGHT_BRACKET); break;
                 case ',': addToken(TokenType.COMMA); break;
+                case ':': addToken(TokenType.COLON); break;
                 case '.': addToken(TokenType.DOT); break;
                 case ';': addToken(TokenType.SEMICOLON); break;
                 case '+': addToken(TokenType.PLUS); break;
@@ -387,6 +388,7 @@ public class ElaraScript {
         R visitBinaryExpr(Binary expr);
         R visitUnaryExpr(Unary expr);
         R visitLiteralExpr(Literal expr);
+        R visitMapLiteralExpr(MapLiteral expr);
         R visitVariableExpr(Variable expr);
         R visitAssignExpr(Assign expr);
         R visitLogicalExpr(Logical expr);
@@ -417,12 +419,21 @@ public class ElaraScript {
         public <R> R accept(ExprVisitor<R> visitor) { return visitor.visitUnaryExpr(this); }
     }
 
-    private static final class Literal implements Expr {
+        private static final class Literal implements Expr {
         final Object value;
         Literal(Object value) { this.value = value; }
+
         public <R> R accept(ExprVisitor<R> visitor) { return visitor.visitLiteralExpr(this); }
     }
-
+    
+    private static final class MapLiteral implements Expr {
+            final LinkedHashMap<String, Expr> entries; // deterministic order
+            MapLiteral(LinkedHashMap<String, Expr> entries) {
+                this.entries = entries;
+            }
+            public <R> R accept(ExprVisitor<R> visitor) { return visitor.visitMapLiteralExpr(this); }
+        }
+    
     private static final class Variable implements Expr {
         final Token name;
         Variable(Token name) { this.name = name; }
@@ -916,6 +927,29 @@ public class ElaraScript {
                 }
                 consume(TokenType.RIGHT_BRACKET, "Expect ']' after array literal.");
                 return new Literal(items);
+            }
+
+            
+            // Map literal (JSON-style object)
+            if (match(TokenType.LEFT_BRACE)) {
+                java.util.LinkedHashMap<String, Expr> entries = new java.util.LinkedHashMap<>();
+                if (!check(TokenType.RIGHT_BRACE)) {
+                    do {
+                        String key;
+                        if (match(TokenType.STRING)) {
+                            key = (String) previous().literal;
+                        } else if (match(TokenType.IDENTIFIER)) {
+                            key = previous().lexeme;
+                        } else {
+                            throw error(peek(), "Expect map key (string or identifier).");
+                        }
+                        consume(TokenType.COLON, "Expect ':' after map key.");
+                        Expr val = expression();
+                        entries.put(key, val);
+                    } while (match(TokenType.COMMA));
+                }
+                consume(TokenType.RIGHT_BRACE, "Expect '}' after map literal.");
+                return new MapLiteral(entries);
             }
 
             throw error(peek(), "Expect expression.");
@@ -1435,12 +1469,15 @@ public class ElaraScript {
         }
 
         private static final class ReturnSignal extends RuntimeException {
-            final Value value;
+            private static final long serialVersionUID = 1L;
+			final Value value;
             ReturnSignal(Value value) { super(null, null, false, false); this.value = value; }
         }
 
         private static final class BreakSignal extends RuntimeException {
-            BreakSignal() { super(null, null, false, false); }
+            private static final long serialVersionUID = 1L;
+
+			BreakSignal() { super(null, null, false, false); }
         }
 
         private static final class UserFunction {
@@ -1480,6 +1517,17 @@ public class ElaraScript {
                 }
             }
         }
+
+		@Override
+		public Value visitMapLiteralExpr(MapLiteral expr) {
+			LinkedHashMap<String, Value> out = new LinkedHashMap<>();
+            if (expr != null && expr.entries != null) {
+                for (Map.Entry<String, Expr> e : expr.entries.entrySet()) {
+                    out.put(e.getKey(), eval(e.getValue()));
+                }
+            }
+            return Value.map(out);
+		}
     }
 
     // ===================== ENGINE PUBLIC API =====================
