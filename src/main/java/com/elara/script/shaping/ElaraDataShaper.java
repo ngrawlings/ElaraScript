@@ -13,7 +13,8 @@ import java.util.*;
  *
  * Notes:
  * - This is intentionally a single file to start. As it grows, split into multiple files.
- * - Structural (exact-key) MAP shaping is planned; v1 supports homogeneous MAP value typing via elementType.
+ * - Supports structural MAP/ARRAY validation via nested FieldSpec declarations.
+ * - Also supports homogeneous MAP/ARRAY value typing via elementType.
  */
 public final class ElaraDataShaper<V> {
 
@@ -112,6 +113,15 @@ public final class ElaraDataShaper<V> {
         public Double elementMin;
         public Double elementMax;
 
+        // Structural MAP/ARRAY
+        // - For MAP: declare expected keys via child(...)
+        // - For ARRAY: declare item schema via item(...)
+        private final LinkedHashMap<String, FieldSpec<V>> children = new LinkedHashMap<>();
+        private FieldSpec<V> itemSpec;
+
+        // Optional advanced custom validator (registered on the shaper instance)
+        private String userFunctionName;
+
         // MATRIX
         public Integer minRows;
         public Integer maxRows;
@@ -152,6 +162,33 @@ public final class ElaraDataShaper<V> {
         public FieldSpec maxCells(int v) { this.maxCells = v; return this; }
 
         public FieldSpec coerceFromString(boolean v) { this.coerceFromString = v; return this; }
+
+        /** Declare a structural child field for MAP specs. */
+        public FieldSpec<V> child(String key, Type t) {
+            if (this.type != Type.MAP) throw new IllegalStateException("child() only valid for MAP specs");
+            FieldSpec<V> fs = new FieldSpec<>(this.kind, key, t);
+            children.put(key, fs);
+            return fs;
+        }
+
+        /** Declare an item schema for ARRAY specs. */
+        public FieldSpec<V> item(Type t) {
+            if (this.type != Type.ARRAY) throw new IllegalStateException("item() only valid for ARRAY specs");
+            FieldSpec<V> fs = new FieldSpec<>(this.kind, this.name + "[]", t);
+            this.itemSpec = fs;
+            return fs;
+        }
+
+        public Map<String, FieldSpec<V>> children() { return Collections.unmodifiableMap(children); }
+        public FieldSpec<V> itemSpec() { return itemSpec; }
+
+        /** Attach a named user-function validator for advanced checks (e.g., cross-field invariants). */
+        public FieldSpec<V> userFunction(String name) {
+            this.userFunctionName = name;
+            return this;
+        }
+
+        public String userFunctionName() { return userFunctionName; }
     }
 
     /**
@@ -189,12 +226,35 @@ public final class ElaraDataShaper<V> {
         Map<String, V> run(Map<String, V> initialEnv) throws RuntimeException;
     }
 
+    /**
+     * Advanced validation hook. Use this for cross-field invariants or bespoke checks that the structural
+     * FieldSpec tree cannot express.
+     */
+    @FunctionalInterface
+    public interface UserFunction<V> {
+        /** Add zero or more errors to the provided list. */
+        void validate(V value, String path, List<ValidationError> errors);
+    }
+
     // ===================== Instance =====================
 
     private final ValueAdapter<V> adapter;
+    private final Map<String, UserFunction<V>> userFunctions = new HashMap<>();
 
     public ElaraDataShaper(ValueAdapter<V> adapter) {
         this.adapter = Objects.requireNonNull(adapter, "adapter");
+    }
+
+    /** Register a named user-function validator. */
+    public void registerUserFunction(String name, UserFunction<V> fn) {
+        if (name == null || name.isBlank()) throw new IllegalArgumentException("name");
+        if (fn == null) throw new IllegalArgumentException("fn");
+        userFunctions.put(name, fn);
+    }
+
+    /** Get a previously registered user-function validator, or null. */
+    public UserFunction<V> userFunction(String name) {
+        return userFunctions.get(name);
     }
 
     // ===================== Public API =====================
@@ -502,7 +562,14 @@ public final class ElaraDataShaper<V> {
                 if (list.size() > shape.maxArrayLength) { errors.add(new ValidationError(path, "Array too large")); break; }
                 if (spec.minItems != null && list.size() < spec.minItems) errors.add(new ValidationError(path, "Must have at least " + spec.minItems + " items"));
                 if (spec.maxItems != null && list.size() > spec.maxItems) errors.add(new ValidationError(path, "Must have at most " + spec.maxItems + " items"));
-                if (spec.elementType != null) {
+                // Structural item schema takes precedence
+                if (spec.itemSpec() != null) {
+                    FieldSpec<V> is = spec.itemSpec();
+                    for (int i = 0; i < list.size(); i++) {
+                        validateValue(is, list.get(i), shape, errors, path + "[" + i + "]");
+                    }
+                } else if (spec.elementType != null) {
+                    // Homogeneous typing (legacy / convenience)
                     for (int i = 0; i < list.size(); i++) {
                         V item = list.get(i);
                         Type it = adapter.typeOf(item);
@@ -560,8 +627,18 @@ public final class ElaraDataShaper<V> {
                 if (spec.minItems != null && n < spec.minItems) errors.add(new ValidationError(path, "Must have at least " + spec.minItems + " entries"));
                 if (spec.maxItems != null && n > spec.maxItems) errors.add(new ValidationError(path, "Must have at most " + spec.maxItems + " entries"));
 
-                // Homogeneous value typing (v1)
-                if (spec.elementType != null && m != null) {
+                // Structural key validation (nested FieldSpec tree)
+                if (!spec.children().isEmpty()) {
+                    for (FieldSpec<V> child : spec.children().values()) {
+                        V cv = (m == null) ? null : m.get(child.name);
+                        if (cv == null) {
+                            if (child.required) errors.add(new ValidationError(path + "." + child.name, "Missing required field"));
+                            continue;
+                        }
+                        validateValue(child, cv, shape, errors, path + "." + child.name);
+                    }
+                } else if (spec.elementType != null && m != null) {
+                    // Homogeneous value typing (legacy / convenience)
                     for (Map.Entry<String, V> e : m.entrySet()) {
                         V vv = e.getValue();
                         if (vv == null || adapter.typeOf(vv) != spec.elementType) {
@@ -571,13 +648,25 @@ public final class ElaraDataShaper<V> {
                         }
                     }
                 }
-
-                // TODO(vNext): Structural map shapes (required/optional keys + nested validation)
                 break;
             }
             case NULL:
             default:
                 break;
+        }
+
+        // Optional advanced validator (runs after structural/type checks)
+        if (spec.userFunctionName() != null) {
+            UserFunction<V> fn = userFunction(spec.userFunctionName());
+            if (fn == null) {
+                errors.add(new ValidationError(path, "Missing user_function validator: " + spec.userFunctionName()));
+            } else {
+                try {
+                    fn.validate(v, path, errors);
+                } catch (RuntimeException ex) {
+                    errors.add(new ValidationError(path, "user_function '" + spec.userFunctionName() + "' threw: " + ex.getMessage()));
+                }
+            }
         }
     }
 }

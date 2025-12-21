@@ -1632,14 +1632,19 @@ public class ElaraScript {
                 Environment previous = interpreter.env;
                 interpreter.env = new Environment(closure);
                 try {
-                    for (int i = 0; i < params.size(); i++) {
-                        String p = params.get(i).lexeme;
-                        Value v = args.get(i);
-                        // Optional, name-driven validation/coercion hook.
-                        v = interpreter.maybeValidateUserArg(name, p, v);
-                        interpreter.env.define(p, v);
-                    }
+                	for (int i = 0; i < params.size(); i++) {
+                	    String pRaw = params.get(i).lexeme;     // e.g. "user_payload??"
+                	    Value v = args.get(i);
 
+                	    // Optional, name-driven validation/coercion hook (must see ?? marker).
+                	    v = interpreter.maybeValidateUserArg(name, pRaw, v);
+
+                	    // Bind variable name WITHOUT the trailing "??" (avoid visual confusion)
+                	    String pVar = pRaw.endsWith("??") ? pRaw.substring(0, pRaw.length() - 2) : pRaw;
+
+                	    interpreter.env.define(pVar, v);
+                	}
+                	
                     try {
                         for (Stmt s : body) s.accept(interpreter);
                     } catch (ReturnSignal rs) {
@@ -2032,6 +2037,23 @@ public class ElaraScript {
                 }
                 default: throw new RuntimeException("len() not supported for type: " + v.getType());
             }
+        });
+        
+        registerFunction("typeof", (args) -> {
+            if (args.size() != 1) {
+                throw new RuntimeException("typeof(x) expects 1 argument, got " + args.size());
+            }
+            Value v = args.get(0);
+            return Value.string(switch (v.getType()) {
+                case NUMBER -> "number";
+                case BOOL   -> "bool";
+                case STRING -> "string";
+                case BYTES  -> "bytes";
+                case ARRAY  -> "array";
+                case MATRIX -> "matrix";
+                case MAP    -> "map";
+                case NULL   -> "null";
+            });
         });
         
         registerFunction("keys", args -> {
