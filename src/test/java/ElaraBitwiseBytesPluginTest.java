@@ -14,16 +14,17 @@ public class ElaraBitwiseBytesPluginTest {
         ElaraScript es = new ElaraScript();
         ElaraBitwiseBytesPlugin.register(es);
 
-        String src = """
-            function main(a, b) {
-                let x = bw_xor(a, b);   // [0xFF,0xFF]
-                let y = bw_and(a, b);   // [0x00,0x00]
-                let z = bw_or(a, b);    // [0xFF,0xFF]
-                let n = bw_not(y);      // [0xFF,0xFF]
-                // return: x[0] + y[0]*10 + z[0]*100 + n[0]*1000
-                return x[0] + y[0]*10 + z[0]*100 + n[0]*1000;
-            }
-            """;
+        String src = String.join("\n",
+            "function main(a, b) {",
+            "    let x = bw_xor(a, b);   // [0xFF,0xFF]",
+            "    let y = bw_and(a, b);   // [0x00,0x00]",
+            "    let z = bw_or(a, b);    // [0xFF,0xFF]",
+            "    let n = bw_not(y);      // [0xFF,0xFF]",
+            "    // return: x[0] + y[0]*10 + z[0]*100 + n[0]*1000",
+            "    return x[0] + y[0]*10 + z[0]*100 + n[0]*1000;",
+            "}",
+            ""
+        );
 
         Value a = Value.bytes(new byte[] { (byte) 0xF0, (byte) 0x0F });
         Value b = Value.bytes(new byte[] { (byte) 0x0F, (byte) 0xF0 });
@@ -41,13 +42,14 @@ public class ElaraBitwiseBytesPluginTest {
         ElaraScript es = new ElaraScript();
         ElaraBitwiseBytesPlugin.register(es);
 
-        String src = """
-            function main(b) {
-                // 0x12 0x34 << 4 (BE) == 0x23 0x40
-                let s = bw_shl(b, 4, "BE");
-                return s[0] * 1000 + s[1];
-            }
-            """;
+        String src = String.join("\n",
+            "function main(b) {",
+            "    // 0x12 0x34 << 4 (BE) == 0x23 0x40",
+            "    let s = bw_shl(b, 4, \"BE\");",
+            "    return s[0] * 1000 + s[1];",
+            "}",
+            ""
+        );
 
         Value b = Value.bytes(new byte[] { 0x12, 0x34 });
 
@@ -60,13 +62,14 @@ public class ElaraBitwiseBytesPluginTest {
         ElaraScript es = new ElaraScript();
         ElaraBitwiseBytesPlugin.register(es);
 
-        String src = """
-            function main(b) {
-                // 0x12 0x34 >> 4 (BE) == 0x01 0x23
-                let s = bw_shr(b, 4, "BE");
-                return s[0] * 1000 + s[1];
-            }
-            """;
+        String src = String.join("\n",
+            "function main(b) {",
+            "    // 0x12 0x34 >> 4 (BE) == 0x01 0x23",
+            "    let s = bw_shr(b, 4, \"BE\");",
+            "    return s[0] * 1000 + s[1];",
+            "}",
+            ""
+        );
 
         Value b = Value.bytes(new byte[] { 0x12, 0x34 });
 
@@ -79,16 +82,17 @@ public class ElaraBitwiseBytesPluginTest {
         ElaraScript es = new ElaraScript();
         ElaraBitwiseBytesPlugin.register(es);
 
-        String src = """
-            function main(b) {
-                // ROL by 4: 0x12 0x34 -> 0x23 0x41
-                let rl = bw_rol(b, 4, "BE");
-                // ROR by 4: 0x12 0x34 -> 0x41 0x23
-                let rr = bw_ror(b, 4, "BE");
-                // return rl[0]*1e6 + rl[1]*1e3 + rr[0]*1 + rr[1]*0 (pack)
-                return rl[0] * 1000000 + rl[1] * 1000 + rr[0];
-            }
-            """;
+        String src = String.join("\n",
+            "function main(b) {",
+            "    // ROL by 4: 0x12 0x34 -> 0x23 0x41",
+            "    let rl = bw_rol(b, 4, \"BE\");",
+            "    // ROR by 4: 0x12 0x34 -> 0x41 0x23",
+            "    let rr = bw_ror(b, 4, \"BE\");",
+            "    // return rl[0]*1e6 + rl[1]*1e3 + rr[0]*1 + rr[1]*0 (pack)",
+            "    return rl[0] * 1000000 + rl[1] * 1000 + rr[0];",
+            "}",
+            ""
+        );
 
         Value b = Value.bytes(new byte[] { 0x12, 0x34 });
 
@@ -105,12 +109,13 @@ public class ElaraBitwiseBytesPluginTest {
         ElaraScript es = new ElaraScript();
         ElaraBitwiseBytesPlugin.register(es);
 
-        String src = """
-            function main(a, b) {
-                let x = bw_xor(a, b);
-                return len(x);
-            }
-            """;
+        String src = String.join("\n",
+            "function main(a, b) {",
+            "    let x = bw_xor(a, b);",
+            "    return len(x);",
+            "}",
+            ""
+        );
 
         Value a = Value.bytes(new byte[] { 1, 2 });
         Value b = Value.bytes(new byte[] { 3 });

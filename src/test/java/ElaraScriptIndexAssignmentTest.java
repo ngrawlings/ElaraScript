@@ -13,10 +13,11 @@ public class ElaraScriptIndexAssignmentTest {
     void array_index_assignment_sets_value() {
         ElaraScript es = new ElaraScript();
 
-        String src = """
-            let a = [1, 2, 3];
-            a[1] = 9;
-        """;
+        String src = String.join("\n",
+            "let a = [1, 2, 3];",
+            "a[1] = 9;",
+            ""
+        );
 
         Map<String, ElaraScript.Value> env = es.run(src);
 
@@ -35,10 +36,11 @@ public class ElaraScriptIndexAssignmentTest {
     void array_index_assignment_allows_append_at_len() {
         ElaraScript es = new ElaraScript();
 
-        String src = """
-            let a = [1];
-            a[len(a)] = 2;
-        """;
+        String src = String.join("\n",
+            "let a = [1];",
+            "a[len(a)] = 2;",
+            ""
+        );
 
         Map<String, ElaraScript.Value> env = es.run(src);
 
@@ -52,10 +54,11 @@ public class ElaraScriptIndexAssignmentTest {
     void nested_array_assignment_supports_pairs_style_update() {
         ElaraScript es = new ElaraScript();
 
-        String src = """
-            let kv = ["ts", 1];
-            kv[1] = 2;
-        """;
+        String src = String.join("\n",
+            "let kv = [\"ts\", 1];",
+            "kv[1] = 2;",
+            ""
+        );
 
         Map<String, ElaraScript.Value> env = es.run(src);
 
@@ -71,9 +74,10 @@ public class ElaraScriptIndexAssignmentTest {
         Map<String, ElaraScript.Value> initial = new LinkedHashMap<>();
         initial.put("b", ElaraScript.Value.bytes(new byte[] { 1, 2, 3 }));
 
-        String src = """
-            b[1] = 255;
-        """;
+        String src = String.join("\n",
+            "b[1] = 255;",
+            ""
+        );
 
         Map<String, ElaraScript.Value> env = es.run(src, initial);
 
@@ -92,9 +96,10 @@ public class ElaraScriptIndexAssignmentTest {
         Map<String, ElaraScript.Value> initial = new LinkedHashMap<>();
         initial.put("b", ElaraScript.Value.bytes(new byte[] { 0 }));
 
-        String src = """
-            b[0] = 256;
-        """;
+        String src = String.join("\n",
+            "b[0] = 256;",
+            ""
+        );
 
         assertThrows(RuntimeException.class, () -> es.run(src, initial));
     }
@@ -103,10 +108,11 @@ public class ElaraScriptIndexAssignmentTest {
     void array_assignment_rejects_out_of_bounds_greater_than_len() {
         ElaraScript es = new ElaraScript();
 
-        String src = """
-            let a = [1];
-            a[2] = 9;
-        """;
+        String src = String.join("\n",
+            "let a = [1];",
+            "a[2] = 9;",
+            ""
+        );
 
         assertThrows(RuntimeException.class, () -> es.run(src));
     }

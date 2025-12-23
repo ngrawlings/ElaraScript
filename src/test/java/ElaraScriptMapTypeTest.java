@@ -44,13 +44,12 @@ public class ElaraScriptMapTypeTest {
         m.put("a", 123.0);
         raw.put("m", m);
 
-        String src = """
-            let gotA = m["a"];
-            let missing = m["does_not_exist"];   // should become null/nil
-            m["b"] = 456;
-            let afterSet = m["b"];
-            let mapLen = len(m);
-        """;
+        String src =
+                "let gotA = m[\"a\"];\n" +
+                "let missing = m[\"does_not_exist\"];   // should become null/nil\n" +
+                "m[\"b\"] = 456;\n" +
+                "let afterSet = m[\"b\"];\n" +
+                "let mapLen = len(m);\n";
 
         ElaraDataShaper.RunResult<Value> rr = es.runShaped(src, "map_get_set_len", raw, false);
         assertTrue(rr.ok(), () -> "Errors: " + rr.errors());
@@ -77,11 +76,10 @@ public class ElaraScriptMapTypeTest {
         m.put("k", 1);
         raw.put("m", m);
 
-        String src = """
-            let v1 = m["k"];
-            m["k"] = 777;
-            let v2 = m["k"];
-        """;
+        String src =
+                "let v1 = m[\"k\"];\n" +
+                "m[\"k\"] = 777;\n" +
+                "let v2 = m[\"k\"];\n";
 
         ElaraDataShaper.RunResult<Value> rr = es.runShaped(src, "map_overwrite", raw, false);
         assertTrue(rr.ok(), () -> "Errors: " + rr.errors());
@@ -109,9 +107,8 @@ public class ElaraScriptMapTypeTest {
 
         raw.put("m", outer);
 
-        String src = """
-            let x = m["inner"]["x"];
-        """;
+        String src =
+                "let x = m[\"inner\"][\"x\"];\n";
 
         ElaraDataShaper.RunResult<Value> rr = es.runShaped(src, "map_nested_get", raw, false);
         assertTrue(rr.ok(), () -> "Errors: " + rr.errors());
@@ -137,12 +134,11 @@ public class ElaraScriptMapTypeTest {
         m.put("z", 1);
         raw.put("m", m);
 
-        String src = """
-            let m2 = m;
-            m2["z"] = 999;
-            let a = m["z"];
-            let b = m2["z"];
-        """;
+        String src =
+                "let m2 = m;\n" +
+                "m2[\"z\"] = 999;\n" +
+                "let a = m[\"z\"];\n" +
+                "let b = m2[\"z\"];\n";
 
         ElaraDataShaper.RunResult<Value> rr = es.runShaped(src, "map_assign_share", raw, false);
         assertTrue(rr.ok(), () -> "Errors: " + rr.errors());
@@ -169,15 +165,14 @@ public class ElaraScriptMapTypeTest {
         m.put("c", 30);
         raw.put("m", m);
 
-        String src = """
-            let ks = keys(m);
-            let sum = 0;
-            for (let i = 0; i < len(ks); i = i + 1) {
-                let k = ks[i];
-                sum = sum + m[k];
-            }
-            let keyCount = len(ks);
-        """;
+        String src =
+                "let ks = keys(m);\n" +
+                "let sum = 0;\n" +
+                "for (let i = 0; i < len(ks); i = i + 1) {\n" +
+                "    let k = ks[i];\n" +
+                "    sum = sum + m[k];\n" +
+                "}\n" +
+                "let keyCount = len(ks);\n";
 
         ElaraDataShaper.RunResult<Value> rr = es.runShaped(src, "map_keys_sum", raw, false);
         assertTrue(rr.ok(), () -> "Errors: " + rr.errors());
@@ -196,15 +191,14 @@ public class ElaraScriptMapTypeTest {
 
         es.dataShaping().register("map_new", shape);
 
-        String src = """
-            let m1 = map_new();
-            let m2 = map_new();
-
-            m1["a"] = 1;
-
-            let len1 = len(m1);
-            let len2 = len(m2);
-        """;
+        String src =
+                "let m1 = map_new();\n" +
+                "let m2 = map_new();\n" +
+                "\n" +
+                "m1[\"a\"] = 1;\n" +
+                "\n" +
+                "let len1 = len(m1);\n" +
+                "let len2 = len(m2);\n";
 
         ElaraDataShaper.RunResult<Value> rr = es.runShaped(src, "map_new", Map.of(), false);
         assertTrue(rr.ok(), () -> "Errors: " + rr.errors());
@@ -229,13 +223,12 @@ public class ElaraScriptMapTypeTest {
         m.put("x", 1);
         raw.put("m", m);
 
-        String src = """
-            let c = map_clone(m);
-            c["x"] = 999;
-
-            let orig = m["x"];
-            let clone = c["x"];
-        """;
+        String src =
+                "let c = map_clone(m);\n" +
+                "c[\"x\"] = 999;\n" +
+                "\n" +
+                "let orig = m[\"x\"];\n" +
+                "let clone = c[\"x\"];\n";
 
         ElaraDataShaper.RunResult<Value> rr = es.runShaped(src, "map_clone", raw, false);
         assertTrue(rr.ok(), () -> "Errors: " + rr.errors());
@@ -256,16 +249,15 @@ public class ElaraScriptMapTypeTest {
 
         es.dataShaping().register("map_remove_key", shape);
 
-        String src = """
-            let m = map_new();
-            m["a"] = 1;
-            m["b"] = 2;
-
-            let before = len(m);
-            let removed = map_remove_key(m, "a");
-            let after = len(m);
-            let missing = m["a"];
-        """;
+        String src =
+                "let m = map_new();\n" +
+                "m[\"a\"] = 1;\n" +
+                "m[\"b\"] = 2;\n" +
+                "\n" +
+                "let before = len(m);\n" +
+                "let removed = map_remove_key(m, \"a\");\n" +
+                "let after = len(m);\n" +
+                "let missing = m[\"a\"];\n";
 
         ElaraDataShaper.RunResult<Value> rr = es.runShaped(src, "map_remove_key", Map.of(), false);
         assertTrue(rr.ok(), () -> "Errors: " + rr.errors());

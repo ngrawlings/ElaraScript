@@ -17,10 +17,8 @@ public class ElaraScriptUserFunctionParamValidationTest {
         top.output("out", ElaraDataShaper.Type.NUMBER).required(true);
         es.dataShaping().register("top", top);
 
-        String src = """
-            function f(missing_x??) { return 1; }
-            let out = f(123);
-        """;
+        String src = "function f(missing_x??) { return 1; }"
+            + "let out = f(123);";
 
         ElaraDataShaper.RunResult<Value> rr = es.runShaped(src, "top", Map.of(), false);
         assertFalse(rr.ok(), "Expected failure because required validator 'missing' is not registered");
@@ -42,10 +40,8 @@ public class ElaraScriptUserFunctionParamValidationTest {
         top.output("out", ElaraDataShaper.Type.NUMBER).required(true);
         es.dataShaping().register("top", top);
 
-        String src = """
-            function f(num_a??) { return 1; }
-            let out = f("not-a-number");
-        """;
+        String src = "function f(num_a??) { return 1; }"
+            + "let out = f(\"not-a-number\");";
 
         ElaraDataShaper.RunResult<Value> rr = es.runShaped(src, "top", Map.of(), false);
         assertFalse(rr.ok(), "Expected validation failure: num_a?? requires NUMBER");
@@ -59,10 +55,8 @@ public class ElaraScriptUserFunctionParamValidationTest {
         top.output("out", ElaraDataShaper.Type.NUMBER).required(true);
         es.dataShaping().register("top", top);
 
-        String src = """
-            function f(unknown_a) { return 7; }
-            let out = f("anything");
-        """;
+        String src = "function f(unknown_a) { return 7; }"
+            + "let out = f(\"anything\");";
 
         ElaraDataShaper.RunResult<Value> rr = es.runShaped(src, "top", Map.of(), false);
         assertTrue(rr.ok(), () -> "Expected success. Errors: " + rr.errors());
@@ -81,10 +75,8 @@ public class ElaraScriptUserFunctionParamValidationTest {
         top.output("out", ElaraDataShaper.Type.NUMBER).required(true);
         es.dataShaping().register("top", top);
 
-        String src = """
-            function f(no_validation) { return 3; }
-            let out = f("definitely-not-a-number");
-        """;
+        String src = "function f(no_validation) { return 3; }"
+            + "let out = f(\"definitely-not-a-number\");";
 
         ElaraDataShaper.RunResult<Value> rr = es.runShaped(src, "top", Map.of(), false);
         assertTrue(rr.ok(), () -> "Expected success because 'no_validation' disables validation. Errors: " + rr.errors());
@@ -153,12 +145,10 @@ public class ElaraScriptUserFunctionParamValidationTest {
         top.output("out", ElaraDataShaper.Type.NUMBER).required(true);
         es.dataShaping().register("top", top);
 
-        String src = """
-            function f(user_payload??) {
-                return user_payload["profile"]["id"];
-            }
-            let out = f(u);
-        """;
+        String src = "function f(user_payload??) {"
+                + "return user_payload[\"profile\"][\"id\"];"
+            	+ "}"
+            	+ "let out = f(u);";
 
         Map<String, Object> okRaw = Map.of(
                 "u", Map.of(
@@ -204,22 +194,20 @@ public class ElaraScriptUserFunctionParamValidationTest {
 
         // No DataShape registered for "user" on purpose.
         // Define ES validator: type_user(v) -> true/false
-        String src = """
-            function type_user(v) {
-                // require v.profile.id == 42
-                if (v == null) return false;
-                let p = v["profile"];
-                if (p == null) return false;
-                return p["id"] == 42;
-            }
+        String src = "function type_user(v) {\n"
+                + "// require v.profile.id == 42\n"
+                + "if (v == null) return false;\n"
+                + "let p = v[\"profile\"];\n"
+                + "if (p == null) return false;\n"
+                + "return p[\"id\"] == 42;\n"
+                + "}\n"
 
-            function f(user_payload??) {
-                // If validation passed, user_payload is available (bound without ??)
-                return user_payload["profile"]["id"];
-            }
+                + "function f(user_payload??) {\n"
+                + "    	// If validation passed, user_payload is available (bound without ??)\n"
+                + "		return user_payload[\"profile\"][\"id\"];\n"
+                + "}\n"
 
-            let out = f(u);
-            """;
+            	+ "let out = f(u);";
 
         // --- Case 1: valid payload -> should pass via type_user() fallback
         Map<String, Object> okRaw = Map.of(

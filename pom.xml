@@ -6,10 +6,22 @@
   <groupId>com.elara</groupId>
   <artifactId>elara-rpc</artifactId>
   <version>0.0.1-SNAPSHOT</version>
+  <packaging>jar</packaging>
+
+  <name>Elara RPC</name>
+  <description>Elara RPC / core engine protocol library</description>
 
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    <maven.compiler.release>25</maven.compiler.release>
+
+    <!-- Android/Gradle-friendly bytecode target.
+         If you really need newer language features, raise this later and
+         configure desugaring on Android side. -->
+    <maven.compiler.release>11</maven.compiler.release>
+
+    <!-- Centralize versions -->
+    <jackson.version>2.17.2</jackson.version>
+    <junit.jupiter.version>5.11.0</junit.jupiter.version>
   </properties>
 
   <dependencies>
@@ -17,14 +29,14 @@
     <dependency>
       <groupId>com.fasterxml.jackson.core</groupId>
       <artifactId>jackson-databind</artifactId>
-      <version>2.17.2</version>
+      <version>${jackson.version}</version>
     </dependency>
 
     <!-- Tests (JUnit 5) -->
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter</artifactId>
-      <version>5.11.0</version>
+      <version>${junit.jupiter.version}</version>
       <scope>test</scope>
     </dependency>
   </dependencies>
@@ -47,6 +59,36 @@
         <configuration>
           <useModulePath>false</useModulePath>
         </configuration>
+      </plugin>
+
+      <!-- Attach sources jar (Android Studio will show sources when you jump to definition) -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-source-plugin</artifactId>
+        <version>3.3.1</version>
+        <executions>
+          <execution>
+            <id>attach-sources</id>
+            <goals>
+              <goal>jar</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+
+      <!-- Attach javadoc jar (useful now; required later for Maven Central) -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-javadoc-plugin</artifactId>
+        <version>3.7.0</version>
+        <executions>
+          <execution>
+            <id>attach-javadocs</id>
+            <goals>
+              <goal>jar</goal>
+            </goals>
+          </execution>
+        </executions>
       </plugin>
     </plugins>
   </build>

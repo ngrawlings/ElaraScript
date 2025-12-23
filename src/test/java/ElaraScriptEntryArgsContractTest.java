@@ -13,15 +13,14 @@ public class ElaraScriptEntryArgsContractTest {
     void runWithEntryResult_passesAllEntryArgs_inOrder() {
         ElaraScript es = new ElaraScript();
 
-        String src = """
-            function event_system_ready(type, target, payload) {
-                // payload should be envPairs: [["ts", 123]]
-                if (type == "system" && target == "ready" && payload[0][0] == "ts" && payload[0][1] == 123) {
-                    return 1;
-                }
-                return 0;
-            }
-            """;
+        String src =
+                "function event_system_ready(type, target, payload) {\n" +
+                "    // payload should be envPairs: [[\"ts\", 123]]\n" +
+                "    if (type == \"system\" && target == \"ready\" && payload[0][0] == \"ts\" && payload[0][1] == 123) {\n" +
+                "        return 1;\n" +
+                "    }\n" +
+                "    return 0;\n" +
+                "}\n";
 
         // payload = [["ts", 123]]
         Value payload = Value.array(List.of(
@@ -43,11 +42,10 @@ public class ElaraScriptEntryArgsContractTest {
     void runWithEntryResult_throws_ifArgCountMismatch() {
         ElaraScript es = new ElaraScript();
 
-        String src = """
-            function event_system_ready(type, target, payload) {
-                return 0;
-            }
-            """;
+        String src =
+                "function event_system_ready(type, target, payload) {\n" +
+                "    return 0;\n" +
+                "}\n";
 
         RuntimeException ex = assertThrows(RuntimeException.class, () -> es.runWithEntryResult(
                 src,

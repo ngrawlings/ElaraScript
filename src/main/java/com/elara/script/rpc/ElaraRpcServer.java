@@ -118,7 +118,7 @@ public final class ElaraRpcServer implements Closeable {
             JsonNode args = req.has("args") ? req.get("args") : req.get("params");
 
             switch (method) {
-                case "dispatchEvent" -> {
+                case "dispatchEvent": {
                     if (args == null || !args.isObject()) {
                         resp.put("ok", false);
                         resp.put("error", "dispatchEvent requires object args");
@@ -168,7 +168,7 @@ public final class ElaraRpcServer implements Closeable {
                     resp.set("result", resultNode);
                 }
 
-                case "pollEvents" -> {
+                case "pollEvents": {
                     long cursor = 0;
                     if (args != null && args.has("cursor")) {
                         cursor = args.path("cursor").asLong(0);
@@ -179,12 +179,12 @@ public final class ElaraRpcServer implements Closeable {
                     resp.set("result", result);
                 }
 
-                case "ping" -> {
+                case "ping": {
                     resp.put("ok", true);
                     resp.put("result", "pong");
                 }
 
-                default -> {
+                default: {
                     resp.put("ok", false);
                     resp.put("error", "Unknown method: " + method);
                 }

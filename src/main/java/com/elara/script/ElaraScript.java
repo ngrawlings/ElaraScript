@@ -2076,16 +2076,19 @@ public class ElaraScript {
                 throw new RuntimeException("typeof(x) expects 1 argument, got " + args.size());
             }
             Value v = args.get(0);
-            return Value.string(switch (v.getType()) {
-                case NUMBER -> "number";
-                case BOOL   -> "bool";
-                case STRING -> "string";
-                case BYTES  -> "bytes";
-                case ARRAY  -> "array";
-                case MATRIX -> "matrix";
-                case MAP    -> "map";
-                case NULL   -> "null";
-            });
+            String typeName;
+            switch (v.getType()) {
+              case NUMBER:
+                typeName = "number";
+                break;
+              case BOOL:
+                typeName = "bool";
+                break;
+              default:
+                typeName = "unknown";
+                break;
+            }
+            return Value.string(typeName);
         });
         
         registerFunction("keys", args -> {

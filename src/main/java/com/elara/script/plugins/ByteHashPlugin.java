@@ -46,11 +46,12 @@ public final class ByteHashPlugin {
     // ----------------- internals -----------------
 
     private static byte[] coerceToBytesOrUtf8(Value v, String label) {
-        return switch (v.getType()) {
-            case BYTES -> v.asBytes();
-            case STRING -> v.asString().getBytes(StandardCharsets.UTF_8);
-            default -> throw new RuntimeException(label + ": expected BYTES or STRING");
-        };
+    	switch (v.getType()) {
+    	  case BYTES:
+    	    return v.asBytes();
+    	  default:
+    	    throw new RuntimeException("Expected bytes");
+    	}
     }
 
     private static byte[] digest(String alg, byte[] data) {

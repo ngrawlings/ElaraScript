@@ -1,341 +1,547 @@
 # ElaraScript
 
-ElaraScript is a **lightweight, deterministic scripting language** written in Java and designed specifically for **safe, embeddable, event-driven application logic**.
+## 1. Overview
 
-It is **not** a general-purpose language and **not** a JavaScript replacement.  
-Instead, it acts as a **pure computation and dispatch engine** for transforming structured inputs into derived results — ideal for **dynamic UI logic, event handling, rules engines, and calculations** without recompiling applications.
+### 1.1 What is ElaraScript?
 
----
+**ElaraScript** is a deterministic, sandboxed execution language designed for **stateful, event-driven apps** where logic must be portable, safe, replayable, and easy for **AI systems** to generate and reason about.
 
-## Core Design Goals
+ElaraScript is **not** a general-purpose language. It’s a **distributed execution substrate**: executable logic that operates on structured data and produces structured state changes.
 
-- **Deterministic** — same inputs always produce the same outputs
-- **Explicit execution** — no hidden lifecycle or implicit entry points
-- **No hidden state** — no persistence, no ambient globals
-- **Sandbox-safe** — no file, network, reflection, or OS access
-- **Schema-driven** — inputs and outputs validated via `DataShape`
-- **Embeddable** — mobile, desktop, backend
-- **AI-maintainable** — small surface area, predictable semantics
+In practical terms, ElaraScript binds together:
 
-ElaraScript is intentionally **minimal, opinionated, and stable**.
+- Structured inputs (events / payloads)
+- Retained app state
+- Deterministic execution
+- Patch-based state sync
 
----
+### 1.2 Who is it for?
 
-## What ElaraScript Is (and Is Not)
+ElaraScript is designed primarily for:
 
-### ✅ It *is*
-- A **deterministic computation engine**
-- A **clean event-dispatch language**
-- A **rules and calculation language**
-- A **safe alternative to embedded JavaScript**
-- A **UI / app logic backend**
+- **AI systems** that need to modify app behavior dynamically and safely
+- **Embedded/mobile** runtimes where full JS/Lua/Python are too heavy or risky
+- **Event-driven** apps with long-lived state and incremental updates
 
-### ❌ It is *not*
-- A scripting shell
-- A general-purpose programming language
-- A stateful runtime
-- A plugin VM with escape hatches
-- A replacement for application code
+Humans typically provide templates and constraints; AI does most of the editing and synthesis.
 
----
+### 1.3 What niche does it fill?
 
-## Language Overview
+ElaraScript fills the “**Executable JSON**” niche:
 
-### Types
+- More than JSON Schema (validation only)
+- Safer/more deterministic than JS/Lua
+- Higher-level and easier to audit than WASM
 
-- `number` (double)
-- `bool`
-- `string`
-- `array`
-- `null`
+ElaraScript is optimized for:
 
-(Matrices are represented as arrays of arrays.)
+- “One backend, many apps”
+- AI-driven app logic updates
+- Deterministic simulation and replay
+- Patch-based state synchronization
 
 ---
 
-### Variables
+## 2. Core Syntax, Keywords, and Operators
+
+### 2.1 Design philosophy
+
+ElaraScript syntax is intentionally small and predictable:
+
+- JavaScript-like surface syntax
+- No IO, no threads, no host access
+- No reflection or dynamic metaprogramming
+
+### 2.2 Data types
+
+ElaraScript supports a closed set of runtime types:
+
+| Type     | Description                     |
+| -------- | ------------------------------- |
+| `number` | Double-precision floating point |
+| `bool`   | Boolean                         |
+| `string` | UTF-8 string                    |
+| `bytes`  | Binary data                     |
+| `array`  | Ordered list                    |
+| `matrix` | 2D numeric array                |
+| `map`    | String-keyed object             |
+| `null`   | Absence of value                |
+
+### 2.3 Keywords
+
+**Variables**
 
 ```js
 let x = 10;
-let y = x * 2;
 ```
 
----
-
-### Control Flow
+**Control flow**
 
 ```js
-if (x > 5) {
-    y = y + 1;
-} else {
-    y = y - 1;
-}
+if (x > 0) { ... }
+else { ... }
+
+while (cond) { ... }
+
+for (let i = 0; i < n; i++) { ... }
 ```
 
-```js
-while (i < n) {
-    sum = sum + values[i];
-    i = i + 1;
-}
-```
-
-```js
-for (i = 0; i < n; i = i + 1) {
-    sum = sum + values[i];
-}
-```
-
----
-
-### User-Defined Functions
-
-ElaraScript supports **pure, user-defined functions**.
+**Functions**
 
 ```js
 function add(a, b) {
-    return a + b;
+  return a + b;
 }
-
-let r = add(2, 3);
 ```
 
-Functions:
-- Are deterministic
-- Have no side effects
-- Cannot access host state
-- May be called from entry points or other functions
+**Early exit**
+
+```js
+return value;
+break;
+```
+
+### 2.4 Operators
+
+Arithmetic:
+
+```
++  -  *  /  %
+```
+
+Comparison:
+
+```
+==  !=  <  <=  >  >=
+```
+
+Logical:
+
+```
+&&  ||  !
+```
 
 ---
 
-### Spread Operator (`**`)
+## 3. Validator & Data Shaping System
 
-Arrays can be expanded into function arguments using `**`.
+### 3.1 Why validation exists
+
+ElaraScript is designed to process **external inputs** (UI payloads, network events, AI-generated parameters). To preserve determinism and safety, inputs and outputs are validated via **Data Shaping**.
+
+The shaper:
+
+1. Coerces raw inputs
+2. Validates structure and constraints
+3. Produces a safe execution environment
+4. Validates outputs after execution
+
+### 3.2 Shapes
+
+A **Shape** declares expected inputs/outputs plus global safety limits.
+
+Examples (conceptual):
+
+- `input("price", NUMBER).min(0)`
+- `output("signal", STRING)`
+
+Shapes are intentionally simpler than JSON Schema:
+
+- Deterministic
+- Ordered
+- Bounded
+
+### 3.3 FieldSpec constraints
+
+A field may define:
+
+- Required/optional
+- Default values
+- Numeric bounds
+- String/bytes length
+- Regex constraints
+- Array limits + element typing
+- Structural MAP schemas (children)
+- Structural ARRAY schemas (itemSpec)
+- Matrix limits (rows/cols/cells)
+
+### 3.4 Execution pipeline
+
+The shaping pipeline:
+
+1. Raw input → coerced runtime values
+2. Input validation
+3. Script execution
+4. Output validation
+5. Result extraction
+
+Failures return:
+
+- Stable field paths
+- A list of structured errors
+- Optional debug env snapshots
+
+### 3.5 User-defined validators
+
+For advanced invariants (cross-field checks), a field can attach a **named userFunction** registered on the shaper instance.
+
+These validators:
+- Run during validation, not during script execution
+- Cannot mutate state
+- Cannot access host APIs
+- Only emit structured validation errors
+
+---
+
+### 3.6 Null-coalescing (`??`) validation operator
+
+ElaraScript supports a **null-coalescing operator**:
 
 ```js
-let args = [2, 3];
-let r = add(1, **args);   // add(1, 2, 3)
+exprA ?? exprB
+```
+
+#### Semantics
+
+The `??` operator evaluates as follows:
+
+| `exprA` result | Outcome |
+|------|--------|
+| non-`null` value | result is `exprA` |
+| `null` | result is `exprB` |
+| missing variable | treated as `null`, result is `exprB` |
+
+Key properties:
+- `??` operates **at execution time**, not during validation
+- It does **not bypass** input or output validation
+- It only controls **runtime value selection**
+
+This makes `??` safe for AI-generated fallback logic without weakening structural guarantees.
+
+---
+
+### 3.7 Validator invocation via `??`
+
+When a field declares a **userFunction validator**, Elara provides a shorthand pattern using `??`:
+
+```js
+value ?? validator_name
+```
+
+This is interpreted as:
+
+> If `value` is `null` or missing, invoke `validator_name(value, path)` during validation.
+
+This allows AI or human authors to express **conditional validation requirements** without complex branching logic.
+
+---
+
+### 3.8 Automatic validator routing (`type_<validator_name>`)
+
+Validator functions are resolved automatically using a strict naming convention:
+
+```
+type_<validator_name>
+```
+
+Example:
+```js
+function type_positive_number(value, path) {
+    if (value < 0) error(path, "must be >= 0");
+}
+```
+
+Routing rules:
+- Validators are invoked **only during the validation phase**
+- They are never callable from script execution
+- They cannot return values, only emit errors
+- Absence of a matching `type_` function is a validation error
+
+This routing model ensures:
+- Deterministic validator discovery
+- Zero reflection or dynamic lookup
+- Predictable behavior for AI-generated code
+
+
+---
+
+## 4. Event Routing and Execution Model
+
+### 4.1 Event-driven by construction
+
+ElaraScript applications do not have a `main()` function. Execution is always driven by **events**.
+
+An event is a structured payload containing:
+
+- `type` – high-level category (e.g. `system`, `ui`, `net`)
+- `target` – specific action or route (e.g. `ready`, `click`, `submit`)
+- `value` – arbitrary structured payload
+
+Events are injected by the host runtime, not created by scripts.
+
+---
+
+### 4.2 Event handlers
+
+Scripts define event handlers using a strict naming convention:
+
+```
+event_<type>_<target>
+```
+
+Example:
+
+```js
+function event_ui_click(type, target, payload) {
+    // handle UI click
+}
+```
+
+If no exact handler exists, execution falls back to:
+
+```js
+function event_router(type, target, payload) { ... }
+```
+
+This guarantees that **every event has a deterministic entry point**.
+
+---
+
+### 4.3 The \_\_event globals
+
+Before execution, the runtime injects read-only globals:
+
+- `__event_type`
+- `__event_target`
+- `__event_value`
+- `__event` → `[type, target, value]`
+
+These are provided for convenience and debugging; the canonical inputs are still the handler arguments.
+
+---
+
+### 4.4 Execution environment
+
+Each event execution receives:
+
+- A snapshot of the retained application state
+- The injected event globals
+- No access to previous call stacks or side effects
+
+Execution is:
+
+- Single-threaded
+- Deterministic
+- Fully isolated per session
+
+---
+
+## 5. State Capture, Diffing, and Fingerprinting
+
+### 5.1 Retained state model
+
+ElaraScript maintains state as a **flat map of key → value**.
+
+Rules:
+
+- Keys starting with `__` are **ephemeral** (not persisted)
+- All values must be JSON-safe
+- State is replaced atomically after execution
+
+---
+
+### 5.2 State capture
+
+After script execution, the runtime captures the final environment and extracts a JSON-safe state snapshot.
+
+This snapshot becomes the authoritative state for the next event.
+
+---
+
+### 5.3 Patch-based diffs
+
+Rather than returning full state, Elara computes a **patch**:
+
+```json
+{
+  "set": [[key, value], ...],
+  "remove": [key, ...]
+}
 ```
 
 Rules:
-- `**` is only valid inside function calls
-- The expanded value must be an array
-- Expansion is positional and in-place
+
+- Keys removed or set to `null` are emitted as `remove`
+- Only changed values appear in `set`
+- Ephemeral keys (`__*`) are ignored
+
+This enables efficient UI and network synchronization.
 
 ---
 
-## Execution Model
+### 5.4 Fingerprints
 
-ElaraScript supports **two explicit execution modes**.
+Every state snapshot is fingerprinted using a deterministic hash.
 
-### 1) Program Mode (Global Context)
+Properties:
 
-Runs the script top-to-bottom and returns the final environment snapshot.
+- Order-independent
+- Stable across platforms
+- Sensitive to deep structural changes
 
-```java
-Map<String, Value> env = engine.run(script);
+Fingerprints allow:
+
+- State integrity verification
+- Client/server desync detection
+- Replay validation
+
+---
+
+## 6. Session Isolation and Security Model
+
+### 6.1 Sessions
+
+Each app instance runs inside a **session** identified by:
+
+- `sessionId`
+- `sessionKey`
+
+A session owns:
+
+- Its retained state
+- Its include cache
+- Its fingerprint history
+
+---
+
+### 6.2 system.ready bootstrap
+
+A new session is created only by the event:
+
+```
+{ type: "system", target: "ready" }
 ```
 
-Use cases:
-- Data transforms
-- One-off computations
-- Initialization logic
+The response returns:
+
+- `sessionId`
+- `sessionKey`
+
+All subsequent events must present both.
 
 ---
 
-### 2) Entry-Function Mode (Recommended)
+### 6.3 Isolation guarantees
 
-Loads the script, then calls a named entry function.
+- Sessions cannot access each other’s state
+- Invalid `sessionKey` immediately aborts execution
+- Scripts cannot enumerate sessions
 
-```java
-Value result = engine.run(
-    script,
-    "dispatch",
-    List.of(state, event)
-);
+This allows multiple apps to safely coexist in one runtime.
+
+---
+
+## 7. Include Preloading and Deployment
+
+### 7.1 Why includes are preloaded
+
+Scripts cannot access the filesystem.
+
+Instead, all includes are:
+
+- Resolved by the host
+- Loaded into memory
+- Sent once during `system.ready`
+
+---
+
+### 7.2 Include syntax
+
+```text
+#include "path/to/script.es"
 ```
 
-Or, with environment snapshot:
+Rules:
 
-```java
-EntryRunResult rr = engine.runWithEntryResult(
-    script,
-    "dispatch",
-    args,
-    initialEnv
-);
-```
-
-Use cases:
-- Event systems
-- UI logic
-- Application dispatch
-- Deterministic app engines
-
-This mode provides a **single, stable execution choke point**.
+- One include per line
+- No inline includes
+- Cycles are detected and rejected
 
 ---
 
-## Event-Driven Design Pattern
+### 7.3 Deterministic expansion
 
-A common pattern is:
+Before parsing:
 
-```js
-function dispatch(state, event) {
-    return event_router(state, event);
-}
-```
+- Includes are expanded recursively
+- The engine never sees `#include` directives
+- Expansion order is deterministic
 
-With handlers named by convention:
-
-```js
-function event_click_button(state, id) { ... }
-function event_change_input(state, value) { ... }
-```
-
-The host:
-- Resolves the handler
-- Calls it
-- Applies the returned state / commands
-
-No large routers. No condition forests.
+This guarantees identical behavior across platforms.
 
 ---
 
-## Strict vs Inference Mode
+## 8. AI-Specific Design Considerations
 
-ElaraScript supports **parser execution modes**:
+### 8.1 Machine-first language
 
-### Strict Mode
-- Fully explicit syntax
-- No inferred calls
-- Maximum safety
+ElaraScript is intentionally designed so that:
 
-### Inference Mode
-- Allows dynamic invocation patterns
-- Enables flexible dispatch systems
-- Used intentionally by the app engine
+- AI systems can generate it safely
+- Behavior can be constrained structurally
+- Scripts are easy to diff, rewrite, and audit
 
-The mode is selected by the host.
+Human ergonomics are secondary.
 
 ---
 
-## DataShape (Schema Validation)
+### 8.2 Why minimalism matters
 
-`DataShape` defines the **contract** between your app and a script.
+Every feature increases the search space for AI.
 
-- Required inputs
-- Optional inputs with defaults
-- Required outputs
+ElaraScript avoids:
 
-```java
-DataShape shape = DataShape.builder()
-    .input("weightKg", NUMBER, true)
-    .input("durationMin", NUMBER, true)
-    .input("intensity", NUMBER, false, 5)
-    .output("calories", NUMBER)
-    .build();
-```
+- Metaprogramming
+- Dynamic scope tricks
+- Implicit side effects
 
-Validation occurs at runtime before and after execution.
+This dramatically improves AI reliability.
 
 ---
 
-## Persistence (External)
+### 8.3 Executable constraints
 
-ElaraScript has **no internal persistence**.
+The validator system allows AI to:
 
-Persistence is handled externally:
+- Explore behavior safely
+- Fail early with structured errors
+- Learn boundaries without runtime crashes
 
-- Capture outputs or environment
-- Serialize to JSON
-- Restore as raw inputs later
-
-```java
-ElaraStateStore store = new ElaraStateStore();
-store.captureOutputs(result.outputs());
-String json = store.toJson();
-```
+This is critical for autonomous systems.
 
 ---
 
-## Plugin System
+### 8.4 Determinism as a learning primitive
 
-ElaraScript supports **host-registered pure function plugins**.
+Because execution is deterministic:
 
-Plugins:
-- Add deterministic functions
-- Cannot modify engine state
-- Cannot access host environment
+- AI can replay decisions
+- Compare fingerprints
+- Reason about cause and effect
 
-```java
-ElaraMathPlugin.register(engine);
-```
+This makes ElaraScript suitable as a **learning substrate**, not just an execution engine.
 
 ---
 
-## Standard Plugins
+## Closing Notes
 
-### Math Plugin
-- `pow`, `sqrt`, `log`, `exp`
-- `abs`, `min`, `max`, `clamp`
-- Trigonometric functions
+ElaraScript is intentionally narrow.
 
-### Matrix Plugin
-- `mat_add`, `mat_mul`
-- `mat_scalar_mul`
-- `mat_transpose`, `mat_shape`
+That narrowness is what makes it:
 
-### Finite Field Plugin
-- `mod`, `gcd`, `egcd`
-- `inv_mod`, `pow_mod`
-- Modular arithmetic helpers
-
----
-
-## Safety Guarantees
-
-ElaraScript guarantees:
-
-- No filesystem access
-- No networking
-- No reflection
-- No threads
-- No native calls
-- No persistent memory
-
-All computation is bounded and explicit.
-
----
-
-## Typical Use Cases
-
-- Event-driven UI logic
-- Mobile app rule engines
-- Financial indicators
-- Health & tracking calculations
-- Configurable workflows
-- AI-generated but **human-verifiable** logic
-
----
-
-## Versioning Philosophy
-
-- **Core language is stable**
-- **Breaking changes are rare**
-- **Plugins evolve independently**
-- **Scripts are versioned by the host app**
-
----
-
-## Summary
-
-ElaraScript is a **small, sharp, finished tool**:
-
-- Deterministic
-- Explicit
-- Event-driven
 - Safe
-- Maintainable
+- Portable
+- Auditable
+- AI-compatible
 
-If you know *what* should happen —  
-ElaraScript lets you express it cleanly, safely, and without recompiling your app.
+It is not meant to replace general-purpose languages. It is meant to **bind intelligence to execution without losing control**.

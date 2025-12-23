@@ -143,22 +143,27 @@ public final class ElaraRpcRepl {
 
             try {
                 switch (cmd) {
-                    case "help" -> printHelp();
-                    case "quit", "exit" -> {
+                    case "help": 
+                    	printHelp();
+                    	break;
+                    	
+                    case "quit":
+                    case "exit": {
                         stopFollow();
                         return;
                     }
 
-                    case "ready" -> {
+                    case "ready": {
                         Long ts = null;
                         if (toks.size() >= 2) {
                             ts = Long.parseLong(toks.get(1));
                         }
                         JsonNode resp = doReady(ts);
                         System.out.println(pretty(resp));
+                        break;
                     }
 
-                    case "send" -> {
+                    case "send": {
                         if (toks.size() < 3) {
                             System.out.println("Usage: send <type> <target> [value.json]");
                             break;
@@ -175,26 +180,30 @@ public final class ElaraRpcRepl {
 
                         JsonNode resp = doDispatch(type, target, valueObj);
                         System.out.println(pretty(resp));
+                        break;
                     }
 
-                    case "poll" -> {
+                    case "poll": {
                         JsonNode resp = doPollOnce();
                         System.out.println(pretty(resp));
+                        break;
                     }
 
-                    case "follow" -> {
+                    case "follow": {
                         int ms = 200;
                         if (toks.size() >= 2) ms = Integer.parseInt(toks.get(1));
                         startFollow(ms);
                         System.out.println("following events every " + ms + "ms (use 'nofollow' to stop)");
+                        break;
                     }
 
-                    case "nofollow" -> {
+                    case "nofollow": {
                         stopFollow();
                         System.out.println("follow stopped");
+                        break;
                     }
 
-                    case "show" -> {
+                    case "show": {
                         System.out.println("sessionId:   " + (sessionId == null ? "(none)" : sessionId));
                         System.out.println("sessionKey:  " + (sessionKey == null ? "(none)" : "(set)"));
                         System.out.println("fingerprint: " + (lastFingerprint == null ? "(none)" : lastFingerprint));
@@ -202,9 +211,10 @@ public final class ElaraRpcRepl {
                         System.out.println("cursor:      " + cursor);
                         System.out.println("nextStateJson: " + (nextStateJson == null ? "(none)" : ("len=" + nextStateJson.length())));
                         System.out.println("nextPatchOverride: " + (nextPatchOverride == null ? "(none)" : ("entries=" + nextPatchOverride.size())));
+                        break;
                     }
 
-                    case "state" -> {
+                    case "state": {
                         if (toks.size() < 2) {
                             System.out.println("Usage: state load <file.json> | state clear");
                             break;
@@ -224,9 +234,10 @@ public final class ElaraRpcRepl {
                         } else {
                             System.out.println("Usage: state load <file.json> | state clear");
                         }
+                        break;
                     }
 
-                    case "patch" -> {
+                    case "patch": {
                         if (toks.size() < 2) {
                             System.out.println("Usage: patch <patch.json>");
                             break;
@@ -239,14 +250,16 @@ public final class ElaraRpcRepl {
                         }
                         nextPatchOverride = (ArrayNode) n;
                         System.out.println("Loaded patch override for next dispatch.");
+                        break;
                     }
 
-                    case "clearpatch" -> {
+                    case "clearpatch": {
                         nextPatchOverride = null;
                         System.out.println("Cleared pending patch override.");
+                        break;
                     }
 
-                    case "reset" -> {
+                    case "reset": {
                         // client-side reset
                         sessionId = null;
                         sessionKey = null;
@@ -256,9 +269,11 @@ public final class ElaraRpcRepl {
                         nextStateJson = null;
                         nextPatchOverride = null;
                         System.out.println("Client session reset (does not affect server).");
+                        break;
                     }
 
-                    default -> System.out.println("Unknown command: " + cmd + " (type 'help')");
+                    default:
+                    	System.out.println("Unknown command: " + cmd + " (type 'help')");
                 }
             } catch (Throwable t) {
                 System.out.println("ERROR: " + (t.getMessage() == null ? t.toString() : t.getMessage()));
@@ -267,43 +282,44 @@ public final class ElaraRpcRepl {
     }
 
     private void printHelp() {
-        System.out.println("""
-Commands:
-  ready [tsMillis]
-      Send system/ready with deterministic preloaded scripts payload.
-      Stores server sessionId/sessionKey and resets client patch chain + fingerprint + cursor.
-
-  send <type> <target> [value.json]
-      Send an event. value.json is optional (defaults to null).
-      Automatically includes sessionId/sessionKey after ready.
-
-  poll
-      Poll server events once (uses current cursor).
-
-  follow [ms]
-      Start polling events repeatedly (default 200ms).
-  nofollow
-      Stop event following.
-
-  show
-      Show client session state (sessionId/sessionKey, fingerprint, patch size, cursor, pending overrides).
-
-  state load <state.json>
-      Force a full sync on NEXT dispatch (legacy servers only).
-  state clear
-      Clear pending full sync.
-
-  patch <patch.json>
-      Force a patch override on NEXT dispatch (legacy servers only).
-  clearpatch
-      Clear pending patch override.
-
-  reset
-      Reset client session tracking (does not affect server).
-
-  quit / exit
-""");
+        System.out.println(String.join("\n",
+            "Commands:",
+            "  ready [tsMillis]",
+            "      Send system/ready with deterministic preloaded scripts payload.",
+            "      Stores server sessionId/sessionKey and resets client patch chain + fingerprint + cursor.",
+            "",
+            "  send <type> <target> [value.json]",
+            "      Send an event. value.json is optional (defaults to null).",
+            "      Automatically includes sessionId/sessionKey after ready.",
+            "",
+            "  poll",
+            "      Poll server events once (uses current cursor).",
+            "",
+            "  follow [ms]",
+            "      Start polling events repeatedly (default 200ms).",
+            "  nofollow",
+            "      Stop event following.",
+            "",
+            "  show",
+            "      Show client session state (sessionId/sessionKey, fingerprint, patch size, cursor, pending overrides).",
+            "",
+            "  state load <state.json>",
+            "      Force a full sync on NEXT dispatch (legacy servers only).",
+            "  state clear",
+            "      Clear pending full sync.",
+            "",
+            "  patch <patch.json>",
+            "      Force a patch override on NEXT dispatch (legacy servers only).",
+            "  clearpatch",
+            "      Clear pending patch override.",
+            "",
+            "  reset",
+            "      Reset client session tracking (does not affect server).",
+            "",
+            "  quit / exit"
+        ));
     }
+
 
     // -----------------------------
     // High-level operations

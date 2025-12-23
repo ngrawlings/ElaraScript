@@ -15,7 +15,7 @@ public class ElaraScriptErrorHandlingModesTest {
         // Missing variable triggers var_not_found and then exception.
         String src = "let x = y;";
 
-        // With no callback, onInterpreterError throws the original exception. :contentReference[oaicite:1]{index=1}
+        // With no callback, onInterpreterError throws the original exception.
         assertThrows(RuntimeException.class, () -> es.run(src));
     }
 
@@ -24,22 +24,23 @@ public class ElaraScriptErrorHandlingModesTest {
         ElaraScript es = new ElaraScript();
         es.setErrorCallback("event_system_error");
 
-        String src = """
-            let kind = "";
-            let name = "";
-            let message = "";
-
-            function event_system_error(k, n, fn, line, msg) {
-                // interpreter may report more than once; keep first
-                if (kind == "") {
-                    kind = k;
-                    if (n != null) name = n;
-                    message = msg;
-                }
-            }
-
-            let x = y;
-        """;
+        String src = String.join("\n",
+            "let kind = \"\";",
+            "let name = \"\";",
+            "let message = \"\";",
+            "",
+            "function event_system_error(k, n, fn, line, msg) {",
+            "    // interpreter may report more than once; keep first",
+            "    if (kind == \"\") {",
+            "        kind = k;",
+            "        if (n != null) name = n;",
+            "        message = msg;",
+            "    }",
+            "}",
+            "",
+            "let x = y;",
+            ""
+        );
 
         Map<String, Value> env = assertDoesNotThrow(() -> es.run(src));
 
@@ -53,18 +54,19 @@ public class ElaraScriptErrorHandlingModesTest {
         ElaraScript es = new ElaraScript();
         es.setErrorCallback("event_system_error");
 
-        String src = """
-            let seen = false;
-
-            function event_system_error(k, n, fn, line, msg) {
-                seen = true;
-            }
-
-            function main() {
-                let x = y;
-                return 42;
-            }
-        """;
+        String src = String.join("\n",
+            "let seen = false;",
+            "",
+            "function event_system_error(k, n, fn, line, msg) {",
+            "    seen = true;",
+            "}",
+            "",
+            "function main() {",
+            "    let x = y;",
+            "    return 42;",
+            "}",
+            ""
+        );
 
         ElaraScript.EntryRunResult rr =
                 assertDoesNotThrow(() -> es.runWithEntryResult(src, "main", null, null));

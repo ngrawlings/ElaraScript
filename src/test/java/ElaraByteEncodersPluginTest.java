@@ -14,14 +14,15 @@ public class ElaraByteEncodersPluginTest {
         ElaraScript es = new ElaraScript();
         ByteEncodersPlugin.register(es);
 
-        String src = """
-            function main(b) {
-                let h = hex_encode(b);
-                let bb = hex_decode(h);
-                // return len*1000 + lastByte (0..255)
-                return len(bb) * 1000 + bb[len(bb) - 1];
-            }
-            """;
+        String src = String.join("\n",
+            "function main(b) {",
+            "    let h = hex_encode(b);",
+            "    let bb = hex_decode(h);",
+            "    // return len*1000 + lastByte (0..255)",
+            "    return len(bb) * 1000 + bb[len(bb) - 1];",
+            "}",
+            ""
+        );
 
         Value b = Value.bytes(new byte[] { 0x00, 0x01, 0x2A, (byte) 0xFF });
 
@@ -35,13 +36,14 @@ public class ElaraByteEncodersPluginTest {
         ElaraScript es = new ElaraScript();
         ByteEncodersPlugin.register(es);
 
-        String src = """
-            function main(b) {
-                let s = b64_encode(b);
-                let bb = b64_decode(s);
-                return len(bb) * 1000 + bb[2];
-            }
-            """;
+        String src = String.join("\n",
+            "function main(b) {",
+            "    let s = b64_encode(b);",
+            "    let bb = b64_decode(s);",
+            "    return len(bb) * 1000 + bb[2];",
+            "}",
+            ""
+        );
 
         Value b = Value.bytes(new byte[] { 10, 20, 30, 40, 50 });
 
@@ -55,13 +57,14 @@ public class ElaraByteEncodersPluginTest {
         ElaraScript es = new ElaraScript();
         ByteEncodersPlugin.register(es);
 
-        String src = """
-            function main(b) {
-                let s = b64url_encode(b);
-                let bb = b64url_decode(s);
-                return len(bb) * 1000 + bb[0];
-            }
-            """;
+        String src = String.join("\n",
+            "function main(b) {",
+            "    let s = b64url_encode(b);",
+            "    let bb = b64url_decode(s);",
+            "    return len(bb) * 1000 + bb[0];",
+            "}",
+            ""
+        );
 
         Value b = Value.bytes(new byte[] { (byte) 0xFF, 0x00, 0x11, 0x22 });
 
@@ -75,13 +78,14 @@ public class ElaraByteEncodersPluginTest {
         ElaraScript es = new ElaraScript();
         ByteEncodersPlugin.register(es);
 
-        String src = """
-            function main() {
-                // odd length -> should throw
-                let b = hex_decode("abc");
-                return len(b);
-            }
-            """;
+        String src = String.join("\n",
+            "function main() {",
+            "    // odd length -> should throw",
+            "    let b = hex_decode(\"abc\");",
+            "    return len(b);",
+            "}",
+            ""
+        );
 
         assertThrows(RuntimeException.class, () -> es.run(src, "main", List.of()));
     }
@@ -91,12 +95,13 @@ public class ElaraByteEncodersPluginTest {
         ElaraScript es = new ElaraScript();
         ByteEncodersPlugin.register(es);
 
-        String src = """
-            function main() {
-                let b = b64_decode("not_base64!!");
-                return len(b);
-            }
-            """;
+        String src = String.join("\n",
+            "function main() {",
+            "    let b = b64_decode(\"not_base64!!\");",
+            "    return len(b);",
+            "}",
+            ""
+        );
 
         assertThrows(RuntimeException.class, () -> es.run(src, "main", List.of()));
     }
