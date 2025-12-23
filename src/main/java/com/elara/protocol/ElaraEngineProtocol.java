@@ -2,7 +2,6 @@ package com.elara.protocol;
 
 import com.elara.protocol.util.StateDiff;
 import com.elara.protocol.util.StateFingerprint;
-import com.elara.protocol.util.FingerprintTraceOut;
 import com.elara.protocol.util.JsonDeepCopy;
 
 import com.elara.script.ElaraScript;
@@ -11,6 +10,7 @@ import com.elara.script.ElaraStateStore;
 import java.security.SecureRandom;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.Deque;
@@ -19,30 +19,16 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
  * Pure-Java protocol layer (no android.*, no flutter MethodCall/Result).
  *
- * Responsibilities:
- *  - Own state per session (multiple apps running simultaneously)
- *  - Create a new session on event_system_ready (type=system,target=ready)
- *  - Return {sessionId, sessionKey} on system.ready so callers can route future events
- *  - Enforce sessionKey for isolation (apps cannot write into other sessions)
- *  - Inject __event globals
- *  - Include preprocessing (#include "...") using scripts cached from system.ready payload (per-session)
- *  - Route to event_<type>_<target> or fallback event_router
- *  - Run ElaraScript and return {patch, commands, fingerprint} sanitized for channel transport
- *
- * Session contract:
- *  - system.ready MUST be called first for a new app instance.
- *  - system.ready creates a new session and caches scripts from payload["scripts"].
- *  - Subsequent events MUST include sessionId + sessionKey in the event map
- *      (top-level keys "sessionId" and "sessionKey"), and will be routed to that session state.
- *
- * Notes:
- *  - State is JSON-safe: Map<String,Object> where Object is null/bool/num/string/List/Map
- *  - Keys starting with "__" are ignored for diffing (StateDiff) and should not be relied on as persisted app state.
+ * IMPORTANT:
+ *  - Only __global_state is persisted across calls.
+ *  - Diff/fingerprint are computed ONLY over __global_state.
+ *  - __commands is injected empty per-run and never persisted.
  */
 public final class ElaraEngineProtocol {
 
@@ -70,10 +56,10 @@ public final class ElaraEngineProtocol {
         final String sessionKey;
 
         // per-session include cache (populated on system.ready)
-        final Map<String, String> scriptCache = new ConcurrentHashMap<>();
+        final Map<String, String> scriptCache = new ConcurrentHashMap<String, String>();
 
-        // per-session retained state (JSON-safe)
-        final Map<String, Object> stateRaw = new LinkedHashMap<>();
+        // per-session retained state (JSON-safe) == ONLY __global_state contents
+        final Map<String, Object> stateRaw = new LinkedHashMap<String, Object>();
         String fingerprint = StateFingerprint.fingerprintRawState(stateRaw);
 
         Session(String sessionId, String sessionKey) {
@@ -83,7 +69,7 @@ public final class ElaraEngineProtocol {
     }
 
     /** sessionId -> Session */
-    private final Map<String, Session> sessions = new ConcurrentHashMap<>();
+    private final Map<String, Session> sessions = new ConcurrentHashMap<String, Session>();
 
     private final SecureRandom rng = new SecureRandom();
 
@@ -95,29 +81,6 @@ public final class ElaraEngineProtocol {
 
     // -------------------------- Public API --------------------------
 
-    /**
-     * Dispatch an event into the script engine.
-     *
-     * Inputs:
-     *  - appScript: the app source (may contain #include directives)
-     *  - event: a JSON-safe map with at least {type,target,value}
-     *     - For non-system.ready events, MUST also include:
-     *         - sessionId: String
-     *         - sessionKey: String
-     *
-     * Output (channel-safe map):
-     *   {
-     *     "patch": { "set": [[k,v],...], "remove": [k,...] },
-     *     "commands": [...],
-     *     "fingerprint": "<md5>",
-     *     "sessionId": "<id>",
-     *     "sessionKey": "<key>"   // only returned on system.ready by default (see below)
-     *   }
-     *
-     * Security:
-     *  - sessionKey is checked for all non-system.ready events.
-     *  - system.ready always creates a NEW session and returns its key.
-     */
     @SuppressWarnings("unchecked")
     public Map<String, Object> dispatchEvent(
             String appScript,
@@ -130,7 +93,6 @@ public final class ElaraEngineProtocol {
             throw new IllegalArgumentException("event required");
         }
 
-        // read event identity early
         Object t0 = event.get("type");
         Object target0 = event.get("target");
         String typeStr = (t0 == null) ? "" : String.valueOf(t0);
@@ -158,14 +120,29 @@ public final class ElaraEngineProtocol {
             session = getSessionOrThrow((String) sid, (String) sk);
         }
 
-        // --- Baseline is session-owned state (snapshot for diff) ---
-        Map<String, Object> rawInputs = JsonDeepCopy.deepCopyMap(session.stateRaw);
+        // ---------------------------
+        // Baseline is ONLY session-owned globals
+        // ---------------------------
+        Map<String, Object> beforeGlobals;
+        synchronized (session) {
+            beforeGlobals = JsonDeepCopy.deepCopyMap(session.stateRaw);
+        }
 
-        // Build env for script from baseline
-        Map<String, ElaraScript.Value> initialEnv = new LinkedHashMap<>();
-        for (Map.Entry<String, Object> e : rawInputs.entrySet()) {
+        // ---------------------------
+        // Build env for the script
+        // ---------------------------
+        Map<String, ElaraScript.Value> initialEnv = new LinkedHashMap<String, ElaraScript.Value>();
+
+        // Always expose globals as a map
+        initialEnv.put("__global_state", ElaraScript.Value.map(coerceMapToValueMap(beforeGlobals)));
+
+        // Also expose each key as a top-level var (optional but handy)
+        for (Map.Entry<String, Object> e : beforeGlobals.entrySet()) {
             initialEnv.put(e.getKey(), coerceAnyToValue(e.getValue()));
         }
+
+        // Always inject fresh commands per-run (no persistence)
+        initialEnv.put("__commands", ElaraScript.Value.array(new ArrayList<ElaraScript.Value>()));
 
         // Inject latest event into env
         Object value = event.get("value");
@@ -174,7 +151,7 @@ public final class ElaraEngineProtocol {
         initialEnv.put("__event_target", ElaraScript.Value.string(targetStr));
         initialEnv.put("__event_value", coerceAnyToValue(value));
 
-        List<ElaraScript.Value> tuple = new ArrayList<>();
+        List<ElaraScript.Value> tuple = new ArrayList<ElaraScript.Value>(3);
         tuple.add(initialEnv.get("__event_type"));
         tuple.add(initialEnv.get("__event_target"));
         tuple.add(initialEnv.get("__event_value"));
@@ -184,7 +161,6 @@ public final class ElaraEngineProtocol {
         ElaraScript engine = new ElaraScript();
         builtins.register(engine);
 
-        // We pass __event as args = [type,target,value]
         ElaraScript.Value ev = initialEnv.get("__event");
         if (ev == null || ev.getType() != ElaraScript.Value.Type.ARRAY) {
             throw new RuntimeException("__event missing or not ARRAY");
@@ -194,7 +170,7 @@ public final class ElaraEngineProtocol {
             throw new RuntimeException("__event must be [type, target, payload]");
         }
 
-        List<ElaraScript.Value> args = List.of(evA.get(0), evA.get(1), evA.get(2));
+        List<ElaraScript.Value> args = Arrays.asList(evA.get(0), evA.get(1), evA.get(2));
         ElaraScript.Value payload = evA.get(2);
 
         // cache includes on system.ready (payload may be MAP or legacy PAIRS array)
@@ -206,8 +182,7 @@ public final class ElaraEngineProtocol {
         // preprocess includes (after caching)
         String processed = preprocessIncludes(session, appScript);
 
-        // Guard: engine must never see a raw include directive
-        if (processed.contains("#include")) {
+        if (processed.indexOf("#include") >= 0) {
             throw new RuntimeException("Preprocess failed: #include still present");
         }
 
@@ -218,42 +193,39 @@ public final class ElaraEngineProtocol {
 
         ElaraScript.EntryRunResult rr = engine.runWithEntryResult(processed, entry, args, initialEnv);
 
+        // Capture env
         ElaraStateStore outStore = new ElaraStateStore().captureEnv(rr.env());
-
-        // Extract JSON-safe view of captured env
         Map<String, Object> raw = outStore.toRawInputs();
 
-        // ✅ Diff/fingerprint only the actual persistent state map
-        Map<String, Object> beforeGlobals = asStringObjectMap(rawInputs.get("__global_state"));
-        Map<String, Object> afterGlobals  = asStringObjectMap(raw.get("__global_state"));
+        // ---------------------------
+        // Extract AFTER globals ONLY
+        // ---------------------------
+        Map<String, Object> afterGlobals = asStringObjectMap(raw.get("__global_state"));
 
+        // diff + fingerprint ONLY over globals
         Map<String, Object> diff = StateDiff.diff(beforeGlobals, afterGlobals).toPatchObject();
-        String fp = StateFingerprint.fingerprintRawState(afterGlobals, new FingerprintTraceOut());
+        String fp = StateFingerprint.fingerprintRawState(afterGlobals);
 
-        // Update session-owned state to match the engine output
+        // Persist ONLY globals back to session
         synchronized (session) {
             session.stateRaw.clear();
-            session.stateRaw.putAll(raw);
+            session.stateRaw.putAll(afterGlobals);
             session.fingerprint = fp;
         }
 
-        Object cmdsObj = raw.get("__commands");
-        List<Object> commandsList = (cmdsObj instanceof List) ? (List<Object>) cmdsObj : new ArrayList<>();
+        // commands are ephemeral; return them but never persist
+        List<Object> commandsList = extractCommandsList(raw.get("__commands"));
 
-        Map<String, Object> resp = new LinkedHashMap<>();
+        Map<String, Object> resp = new LinkedHashMap<String, Object>();
         resp.put("patch", diff);
         resp.put("commands", commandsList);
         resp.put("fingerprint", fp);
 
-        // Always return the sessionId so the caller can route subsequent events.
         resp.put("sessionId", session.sessionId);
-
-        // Only return the sessionKey on system.ready (bootstrap); don't leak it on every call by default.
         if (createdSession) {
             resp.put("sessionKey", session.sessionKey);
         }
 
-        // IMPORTANT: sanitize before crossing platform channel
         return (Map<String, Object>) sanitizeForChannel(resp);
     }
 
@@ -269,19 +241,14 @@ public final class ElaraEngineProtocol {
 
     private Session getSessionOrThrow(String sessionId, String sessionKey) {
         Session s = sessions.get(sessionId);
-        if (s == null) {
-            throw new IllegalArgumentException("Unknown sessionId: " + sessionId);
-        }
-        if (!s.sessionKey.equals(sessionKey)) {
-            throw new IllegalArgumentException("Invalid sessionKey for sessionId: " + sessionId);
-        }
+        if (s == null) throw new IllegalArgumentException("Unknown sessionId: " + sessionId);
+        if (!s.sessionKey.equals(sessionKey)) throw new IllegalArgumentException("Invalid sessionKey for sessionId: " + sessionId);
         return s;
     }
 
     private String randomSessionKey() {
-        byte[] buf = new byte[32]; // 256-bit
+        byte[] buf = new byte[32];
         rng.nextBytes(buf);
-        // URL-safe, no padding
         return Base64.getUrlEncoder().withoutPadding().encodeToString(buf);
     }
 
@@ -290,7 +257,7 @@ public final class ElaraEngineProtocol {
     private static ElaraScript.Value pairsGet(ElaraScript.Value pairs, String key) {
         if (pairs == null || pairs.getType() != ElaraScript.Value.Type.ARRAY) return null;
         for (ElaraScript.Value kv : pairs.asArray()) {
-            var p = kv.asArray();
+            List<ElaraScript.Value> p = kv.asArray();
             if (p.size() == 2 && key.equals(p.get(0).asString())) return p.get(1);
         }
         return null;
@@ -305,7 +272,7 @@ public final class ElaraEngineProtocol {
             Map<String, ElaraScript.Value> m = payload.asMap();
             scriptsV = (m == null) ? null : m.get("scripts");
         } else if (payload.getType() == ElaraScript.Value.Type.ARRAY) {
-            scriptsV = pairsGet(payload, "scripts"); // legacy
+            scriptsV = pairsGet(payload, "scripts");
         }
 
         if (scriptsV == null || scriptsV.getType() != ElaraScript.Value.Type.ARRAY) {
@@ -314,7 +281,7 @@ public final class ElaraEngineProtocol {
         }
 
         for (ElaraScript.Value kv : scriptsV.asArray()) {
-            var p = kv.asArray();
+            List<ElaraScript.Value> p = kv.asArray();
             if (p.size() < 2) continue;
             String path = p.get(0).asString();
             String src  = p.get(1).asString();
@@ -323,15 +290,16 @@ public final class ElaraEngineProtocol {
     }
 
     private String preprocessIncludes(Session session, String src) {
-        return preprocessIncludes(session, src, new ArrayDeque<>());
+        return preprocessIncludes(session, src, new ArrayDeque<String>());
     }
 
     private String preprocessIncludes(Session session, String src, Deque<String> stack) {
         StringBuilder out = new StringBuilder(src.length() + 256);
         String[] lines = src.split("\n", -1);
 
-        for (String line : lines) {
-            var m = INCLUDE.matcher(line);
+        for (int i = 0; i < lines.length; i++) {
+            String line = lines[i];
+            Matcher m = INCLUDE.matcher(line);
             if (!m.matches()) {
                 out.append(line).append('\n');
                 continue;
@@ -366,6 +334,20 @@ public final class ElaraEngineProtocol {
         return out;
     }
 
+    private static List<Object> extractCommandsList(Object v) {
+        if (!(v instanceof List)) return new ArrayList<Object>();
+        return (List<Object>) v;
+    }
+
+    private static Map<String, ElaraScript.Value> coerceMapToValueMap(Map<String, Object> m) {
+        Map<String, ElaraScript.Value> out = new LinkedHashMap<String, ElaraScript.Value>();
+        if (m == null) return out;
+        for (Map.Entry<String, Object> e : m.entrySet()) {
+            out.put(e.getKey(), coerceAnyToValue(e.getValue()));
+        }
+        return out;
+    }
+
     private static Object sanitizeForChannel(Object x) {
         if (x == null) return null;
 
@@ -374,32 +356,24 @@ public final class ElaraEngineProtocol {
             return x;
         }
 
-        // IMPORTANT: do NOT return byte[] or ByteBuffer
         if (x instanceof byte[]) {
             byte[] bb = (byte[]) x;
-            ArrayList<Integer> out = new ArrayList<>(bb.length);
-            for (byte b : bb) out.add(((int) b) & 0xFF);
+            ArrayList<Integer> out = new ArrayList<Integer>(bb.length);
+            for (int i = 0; i < bb.length; i++) out.add(((int) bb[i]) & 0xFF);
             return out;
-        }
-
-        if (x instanceof java.nio.ByteBuffer) {
-            java.nio.ByteBuffer buf = (java.nio.ByteBuffer) x;
-            byte[] bb = new byte[buf.remaining()];
-            buf.slice().get(bb);
-            return sanitizeForChannel(bb);
         }
 
         if (x instanceof List) {
             List<?> src = (List<?>) x;
-            ArrayList<Object> out = new ArrayList<>(src.size());
+            ArrayList<Object> out = new ArrayList<Object>(src.size());
             for (Object it : src) out.add(sanitizeForChannel(it));
             return out;
         }
 
         if (x instanceof Map) {
             Map<?, ?> m = (Map<?, ?>) x;
-            LinkedHashMap<String, Object> out = new LinkedHashMap<>();
-            for (var e : m.entrySet()) {
+            LinkedHashMap<String, Object> out = new LinkedHashMap<String, Object>();
+            for (Map.Entry<?, ?> e : m.entrySet()) {
                 Object k = e.getKey();
                 if (!(k instanceof String)) {
                     throw new RuntimeException("Channel Map key must be String, got: " + (k == null ? "null" : k.getClass()));
@@ -418,7 +392,7 @@ public final class ElaraEngineProtocol {
     @SuppressWarnings("unchecked")
     private static ElaraScript.Value coerceAnyToValue(Object v) {
         if (v == null) return ElaraScript.Value.nil();
-        if (v instanceof Boolean) return ElaraScript.Value.bool((Boolean) v);
+        if (v instanceof Boolean) return ElaraScript.Value.bool(((Boolean) v).booleanValue());
         if (v instanceof Number) return ElaraScript.Value.number(((Number) v).doubleValue());
         if (v instanceof String) return ElaraScript.Value.string((String) v);
 
@@ -432,7 +406,8 @@ public final class ElaraEngineProtocol {
 
                 for (Object row : src) {
                     if (!(row instanceof List)) { allRows = false; break; }
-                    for (Object item : (List<?>) row) {
+                    List<?> r = (List<?>) row;
+                    for (Object item : r) {
                         if (item == null) { numericMatrix = false; break; }
                         if (!(item instanceof Number) && !(item instanceof Boolean)) {
                             numericMatrix = false;
@@ -443,10 +418,10 @@ public final class ElaraEngineProtocol {
                 }
 
                 if (allRows && numericMatrix) {
-                    List<List<ElaraScript.Value>> rows = new ArrayList<>();
+                    List<List<ElaraScript.Value>> rows = new ArrayList<List<ElaraScript.Value>>();
                     for (Object row : src) {
                         List<?> r = (List<?>) row;
-                        List<ElaraScript.Value> rv = new ArrayList<>(r.size());
+                        List<ElaraScript.Value> rv = new ArrayList<ElaraScript.Value>(r.size());
                         for (Object item : r) rv.add(coerceAnyToValue(item));
                         rows.add(rv);
                     }
@@ -454,16 +429,15 @@ public final class ElaraEngineProtocol {
                 }
             }
 
-            // array
-            List<ElaraScript.Value> out = new ArrayList<>(src.size());
+            List<ElaraScript.Value> out = new ArrayList<ElaraScript.Value>(src.size());
             for (Object item : src) out.add(coerceAnyToValue(item));
             return ElaraScript.Value.array(out);
         }
 
         if (v instanceof Map) {
             Map<?, ?> m = (Map<?, ?>) v;
-            java.util.HashMap<String, ElaraScript.Value> out = new java.util.HashMap<>();
-            for (var e : m.entrySet()) {
+            LinkedHashMap<String, ElaraScript.Value> out = new LinkedHashMap<String, ElaraScript.Value>();
+            for (Map.Entry<?, ?> e : m.entrySet()) {
                 Object k = e.getKey();
                 if (!(k instanceof String)) throw new RuntimeException("Map keys must be strings");
                 out.put((String) k, coerceAnyToValue(e.getValue()));
@@ -473,24 +447,24 @@ public final class ElaraEngineProtocol {
 
         throw new RuntimeException("Unsupported value type: " + v.getClass().getName());
     }
-    
+
     @SuppressWarnings("unchecked")
     private static Map<String, Object> asStringObjectMap(Object v) {
-        if (v == null) return Collections.emptyMap();
-        if (!(v instanceof Map<?, ?>)) {
+        if (v == null) return new LinkedHashMap<String, Object>();
+        if (!(v instanceof Map)) {
             throw new IllegalArgumentException("__global_state must be a Map, got: " + v.getClass().getName());
         }
         Map<?, ?> m = (Map<?, ?>) v;
-        // validate string keys + cast
-        Map<String, Object> out = new LinkedHashMap<>();
+
+        Map<String, Object> out = new LinkedHashMap<String, Object>();
         for (Map.Entry<?, ?> e : m.entrySet()) {
             Object k = e.getKey();
             if (!(k instanceof String)) {
-                throw new IllegalArgumentException("__global_state key must be String, got: " + (k == null ? "null" : k.getClass().getName()));
+                throw new IllegalArgumentException("__global_state key must be String, got: " +
+                        (k == null ? "null" : k.getClass().getName()));
             }
-            out.put((String) k, (Object) e.getValue());
+            out.put((String) k, e.getValue());
         }
         return out;
     }
-
 }

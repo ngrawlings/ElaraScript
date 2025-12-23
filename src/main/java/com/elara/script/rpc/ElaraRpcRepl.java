@@ -15,6 +15,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
+import java.util.Map.Entry;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -206,6 +207,10 @@ public final class ElaraRpcRepl {
                     System.out.println("trackedFingerprint: " + (trackedFingerprint == null ? "(none)" : trackedFingerprint));
                     System.out.println("trackedStateKeys:   " + trackedStateRaw.size());
                     System.out.println("verifyFingerprints: " + verifyFingerprints);
+                    
+                    for (Entry<String, Object> e : trackedStateRaw.entrySet()) {
+                    	System.out.println(e.getKey() + ": "+ e.getValue());
+                    }
 
                 } else if ("dumpstate".equals(cmd)) {
                     System.out.println(pretty(om.valueToTree(trackedStateRaw)));
@@ -224,7 +229,7 @@ public final class ElaraRpcRepl {
                     trackedStateRaw.clear();
                     trackedFingerprint = StateFingerprint.fingerprintRawState(trackedStateRaw);
                     System.out.println("tracked state cleared");
-
+                
                 } else if ("state".equals(cmd)) {
                     if (toks.size() < 2) {
                         System.out.println("Usage: state load <file.json> | state clear");
@@ -370,6 +375,11 @@ public final class ElaraRpcRepl {
 
         storeSessionFromResponse(resp);
         applyTrackingFromDispatchResponse(resp);
+        
+        JsonNode result = resp.get("result");
+        if (result != null && result.isObject()) {
+        	executeCommandsFromResult(result, "event_system_ready");
+        }
 
         return resp;
     }
@@ -431,6 +441,11 @@ public final class ElaraRpcRepl {
         }
 
         applyTrackingFromDispatchResponse(resp);
+        
+        if (ok != null && ok.isBoolean() && ok.booleanValue()) {
+        	JsonNode result = resp.get("result");
+        	executeCommandsFromResult(result, "event_"+type+"_"+target);
+        }
 
         return resp;
     }
@@ -480,6 +495,58 @@ public final class ElaraRpcRepl {
             System.out.println("Server session established: sessionId=" + sessionId + " sessionKey=(set)");
         } else if (sessionId != null) {
             System.out.println("Server sessionId returned without sessionKey: sessionId=" + sessionId);
+        }
+    }
+    
+    /**
+     * Execute protocol "commands" returned by the engine.
+     * Supports chained dispatch: ["dispatch", type, target, value]
+     */
+    private void executeCommandsFromResult(JsonNode result, String origin) throws Exception {
+        if (result == null || !result.isObject()) return;
+
+        JsonNode cmds = result.get("commands");
+        if (cmds == null || !cmds.isArray()) return;
+
+        final int max = 64; // hard cap to avoid runaway loops
+        int count = 0;
+
+        for (JsonNode cmd : cmds) {
+            if (++count > max) {
+                System.out.println("[CMD] abort: too many commands (" + max + ")");
+                break;
+            }
+            if (cmd == null || !cmd.isArray() || cmd.size() == 0) continue;
+
+            String op = cmd.get(0).asText("");
+
+            if ("dispatch".equals(op)) {
+                String type = cmd.size() > 1 ? cmd.get(1).asText("") : "";
+                String target = cmd.size() > 2 ? cmd.get(2).asText("") : "";
+
+                Object valueObj = null;
+                if (cmd.size() > 3 && cmd.get(3) != null && !cmd.get(3).isNull()) {
+                    valueObj = om.convertValue(cmd.get(3), Object.class);
+                }
+
+                System.out.println("[CMD] dispatch " + type + " " + target + " (origin=" + origin + ")");
+                JsonNode resp = doDispatch(type, target, valueObj);
+
+                // recurse if that dispatch produced more commands
+                JsonNode ok = resp.get("ok");
+                if (ok != null && ok.isBoolean() && ok.booleanValue()) {
+                    executeCommandsFromResult(resp.get("result"), "dispatch:" + type + "/" + target);
+                }
+                continue;
+            }
+
+            if ("log".equals(op)) {
+                String msg = cmd.size() > 1 ? cmd.get(1).asText("") : "";
+                System.out.println("[CMD] log: " + msg);
+                continue;
+            }
+
+            System.out.println("[CMD] unknown: " + cmd.toString());
         }
     }
 
