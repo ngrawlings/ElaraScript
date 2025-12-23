@@ -1,6 +1,7 @@
 package com.elara.script.rpc;
 
 import com.elara.protocol.ElaraScriptPreloader;
+import com.elara.protocol.util.StateFingerprint;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.*;
@@ -10,12 +11,16 @@ import java.net.Socket;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Persistent stdin REPL for Elara RPC.
+ *
+ * Java 8+ compatible (works on Java 15 and below).
  *
  * Transport is stateless (reconnect per request).
  *
@@ -25,17 +30,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *
  * Legacy client-side patch chaining:
  *  - kept for compatibility with older servers
- *  - if server ignores patch/stateJson, it is harmless
  *
- * Default flow:
- *   > ready
- *   > send ui click ./value.json
- *   > show
- *   > follow 200
- *
- * Args:
- *   --host=127.0.0.1 --port=7777 --script=./scripts/events.es
- *   --scriptsRoot=./scripts        (optional; defaults to parent of --script)
+ * Client-side state tracking + fingerprint verification:
+ *  - maintains a local JSON-safe state map and applies server patch
+ *  - recomputes fingerprint using the same StateFingerprint class as the server
+ *  - compares local vs server fingerprint after every dispatch
  */
 public final class ElaraRpcRepl {
 
@@ -66,6 +65,13 @@ public final class ElaraRpcRepl {
     private String nextStateJson;
     private ArrayNode nextPatchOverride;
 
+    // -----------------------------
+    // Deterministic local state tracking
+    // -----------------------------
+    private final Map<String, Object> trackedStateRaw = new LinkedHashMap<String, Object>();
+    private String trackedFingerprint;
+    private boolean verifyFingerprints = true;
+
     // Follow thread
     private Thread followThread;
     private final AtomicBoolean followRunning = new AtomicBoolean(false);
@@ -80,7 +86,7 @@ public final class ElaraRpcRepl {
         this.entryLogical = this.scriptsRootAbs.relativize(this.entryScriptPathAbs)
                 .toString().replace('\\', '/');
 
-        this.appScriptText = Files.readString(this.entryScriptPathAbs, StandardCharsets.UTF_8);
+        this.appScriptText = readUtf8File(this.entryScriptPathAbs);
 
         this.sessionId = null;
         this.sessionKey = null;
@@ -88,6 +94,8 @@ public final class ElaraRpcRepl {
         this.lastPatch = null;
         this.lastFingerprint = null;
         this.cursor = 0;
+
+        this.trackedFingerprint = StateFingerprint.fingerprintRawState(trackedStateRaw);
     }
 
     // -----------------------------
@@ -96,8 +104,8 @@ public final class ElaraRpcRepl {
     public static void main(String[] args) throws Exception {
         Map<String, String> flags = parseArgs(args);
 
-        String host = flags.getOrDefault("host", "127.0.0.1");
-        int port = Integer.parseInt(flags.getOrDefault("port", "7777"));
+        String host = flags.containsKey("host") ? flags.get("host") : "127.0.0.1";
+        int port = Integer.parseInt(flags.containsKey("port") ? flags.get("port") : "7777");
 
         String script = flags.get("script");
         if (script == null) {
@@ -106,12 +114,12 @@ public final class ElaraRpcRepl {
             return;
         }
 
-        Path entry = Path.of(script);
+        Path entry = Paths.get(script);
         Path scriptsRoot = flags.containsKey("scriptsRoot")
-                ? Path.of(flags.get("scriptsRoot"))
+                ? Paths.get(flags.get("scriptsRoot"))
                 : entry.toAbsolutePath().normalize().getParent();
 
-        if (scriptsRoot == null) scriptsRoot = Path.of(".").toAbsolutePath().normalize();
+        if (scriptsRoot == null) scriptsRoot = Paths.get(".").toAbsolutePath().normalize();
 
         ElaraRpcRepl repl = new ElaraRpcRepl(host, port, entry, scriptsRoot);
 
@@ -142,139 +150,138 @@ public final class ElaraRpcRepl {
             String cmd = toks.get(0).toLowerCase(Locale.ROOT);
 
             try {
-                switch (cmd) {
-                    case "help": 
-                    	printHelp();
-                    	break;
-                    	
-                    case "quit":
-                    case "exit": {
-                        stopFollow();
-                        return;
+                if ("help".equals(cmd)) {
+                    printHelp();
+
+                } else if ("quit".equals(cmd) || "exit".equals(cmd)) {
+                    stopFollow();
+                    return;
+
+                } else if ("ready".equals(cmd)) {
+                    Long ts = null;
+                    if (toks.size() >= 2) ts = Long.parseLong(toks.get(1));
+                    JsonNode resp = doReady(ts);
+                    System.out.println(pretty(resp));
+
+                } else if ("send".equals(cmd)) {
+                    if (toks.size() < 3) {
+                        System.out.println("Usage: send <type> <target> [value.json]");
+                        continue;
+                    }
+                    String type = toks.get(1);
+                    String target = toks.get(2);
+                    Object valueObj = null;
+
+                    if (toks.size() >= 4) {
+                        Path p = Paths.get(toks.get(3));
+                        JsonNode v = om.readTree(readUtf8File(p));
+                        valueObj = om.convertValue(v, Object.class);
                     }
 
-                    case "ready": {
-                        Long ts = null;
-                        if (toks.size() >= 2) {
-                            ts = Long.parseLong(toks.get(1));
-                        }
-                        JsonNode resp = doReady(ts);
-                        System.out.println(pretty(resp));
-                        break;
-                    }
+                    JsonNode resp = doDispatch(type, target, valueObj);
+                    System.out.println(pretty(resp));
 
-                    case "send": {
+                } else if ("poll".equals(cmd)) {
+                    JsonNode resp = doPollOnce();
+                    System.out.println(pretty(resp));
+
+                } else if ("follow".equals(cmd)) {
+                    int ms = 200;
+                    if (toks.size() >= 2) ms = Integer.parseInt(toks.get(1));
+                    startFollow(ms);
+                    System.out.println("following events every " + ms + "ms (use 'nofollow' to stop)");
+
+                } else if ("nofollow".equals(cmd)) {
+                    stopFollow();
+                    System.out.println("follow stopped");
+
+                } else if ("show".equals(cmd)) {
+                    System.out.println("sessionId:   " + (sessionId == null ? "(none)" : sessionId));
+                    System.out.println("sessionKey:  " + (sessionKey == null ? "(none)" : "(set)"));
+                    System.out.println("fingerprint: " + (lastFingerprint == null ? "(none)" : lastFingerprint));
+                    System.out.println("lastPatch:   " + (lastPatch == null ? "(none)" : ("entries=" + lastPatch.size())));
+                    System.out.println("cursor:      " + cursor);
+                    System.out.println("nextStateJson: " + (nextStateJson == null ? "(none)" : ("len=" + nextStateJson.length())));
+                    System.out.println("nextPatchOverride: " + (nextPatchOverride == null ? "(none)" : ("entries=" + nextPatchOverride.size())));
+                    System.out.println("trackedFingerprint: " + (trackedFingerprint == null ? "(none)" : trackedFingerprint));
+                    System.out.println("trackedStateKeys:   " + trackedStateRaw.size());
+                    System.out.println("verifyFingerprints: " + verifyFingerprints);
+
+                } else if ("dumpstate".equals(cmd)) {
+                    System.out.println(pretty(om.valueToTree(trackedStateRaw)));
+
+                } else if ("verify".equals(cmd)) {
+                    if (toks.size() < 2) {
+                        System.out.println("Usage: verify on|off");
+                        continue;
+                    }
+                    verifyFingerprints = "on".equalsIgnoreCase(toks.get(1))
+                            || "true".equalsIgnoreCase(toks.get(1))
+                            || "1".equals(toks.get(1));
+                    System.out.println("verifyFingerprints=" + verifyFingerprints);
+
+                } else if ("clearstate".equals(cmd)) {
+                    trackedStateRaw.clear();
+                    trackedFingerprint = StateFingerprint.fingerprintRawState(trackedStateRaw);
+                    System.out.println("tracked state cleared");
+
+                } else if ("state".equals(cmd)) {
+                    if (toks.size() < 2) {
+                        System.out.println("Usage: state load <file.json> | state clear");
+                        continue;
+                    }
+                    String sub = toks.get(1).toLowerCase(Locale.ROOT);
+                    if ("load".equals(sub)) {
                         if (toks.size() < 3) {
-                            System.out.println("Usage: send <type> <target> [value.json]");
-                            break;
+                            System.out.println("Usage: state load <file.json>");
+                            continue;
                         }
-                        String type = toks.get(1);
-                        String target = toks.get(2);
-                        Object valueObj = null;
-
-                        if (toks.size() >= 4) {
-                            Path p = Path.of(toks.get(3));
-                            JsonNode v = om.readTree(Files.readString(p, StandardCharsets.UTF_8));
-                            valueObj = om.convertValue(v, Object.class);
-                        }
-
-                        JsonNode resp = doDispatch(type, target, valueObj);
-                        System.out.println(pretty(resp));
-                        break;
-                    }
-
-                    case "poll": {
-                        JsonNode resp = doPollOnce();
-                        System.out.println(pretty(resp));
-                        break;
-                    }
-
-                    case "follow": {
-                        int ms = 200;
-                        if (toks.size() >= 2) ms = Integer.parseInt(toks.get(1));
-                        startFollow(ms);
-                        System.out.println("following events every " + ms + "ms (use 'nofollow' to stop)");
-                        break;
-                    }
-
-                    case "nofollow": {
-                        stopFollow();
-                        System.out.println("follow stopped");
-                        break;
-                    }
-
-                    case "show": {
-                        System.out.println("sessionId:   " + (sessionId == null ? "(none)" : sessionId));
-                        System.out.println("sessionKey:  " + (sessionKey == null ? "(none)" : "(set)"));
-                        System.out.println("fingerprint: " + (lastFingerprint == null ? "(none)" : lastFingerprint));
-                        System.out.println("lastPatch:   " + (lastPatch == null ? "(none)" : ("entries=" + lastPatch.size())));
-                        System.out.println("cursor:      " + cursor);
-                        System.out.println("nextStateJson: " + (nextStateJson == null ? "(none)" : ("len=" + nextStateJson.length())));
-                        System.out.println("nextPatchOverride: " + (nextPatchOverride == null ? "(none)" : ("entries=" + nextPatchOverride.size())));
-                        break;
-                    }
-
-                    case "state": {
-                        if (toks.size() < 2) {
-                            System.out.println("Usage: state load <file.json> | state clear");
-                            break;
-                        }
-                        String sub = toks.get(1).toLowerCase(Locale.ROOT);
-                        if ("load".equals(sub)) {
-                            if (toks.size() < 3) {
-                                System.out.println("Usage: state load <file.json>");
-                                break;
-                            }
-                            Path p = Path.of(toks.get(2));
-                            nextStateJson = Files.readString(p, StandardCharsets.UTF_8);
-                            System.out.println("Loaded stateJson for next dispatch (full sync).");
-                        } else if ("clear".equals(sub)) {
-                            nextStateJson = null;
-                            System.out.println("Cleared pending stateJson full sync.");
-                        } else {
-                            System.out.println("Usage: state load <file.json> | state clear");
-                        }
-                        break;
-                    }
-
-                    case "patch": {
-                        if (toks.size() < 2) {
-                            System.out.println("Usage: patch <patch.json>");
-                            break;
-                        }
-                        Path p = Path.of(toks.get(1));
-                        JsonNode n = om.readTree(Files.readString(p, StandardCharsets.UTF_8));
-                        if (!n.isArray()) {
-                            System.out.println("patch.json must be a JSON array of [key,value] entries");
-                            break;
-                        }
-                        nextPatchOverride = (ArrayNode) n;
-                        System.out.println("Loaded patch override for next dispatch.");
-                        break;
-                    }
-
-                    case "clearpatch": {
-                        nextPatchOverride = null;
-                        System.out.println("Cleared pending patch override.");
-                        break;
-                    }
-
-                    case "reset": {
-                        // client-side reset
-                        sessionId = null;
-                        sessionKey = null;
-                        lastPatch = null;
-                        lastFingerprint = null;
-                        cursor = 0;
+                        Path p = Paths.get(toks.get(2));
+                        nextStateJson = readUtf8File(p);
+                        System.out.println("Loaded stateJson for next dispatch (full sync)." );
+                    } else if ("clear".equals(sub)) {
                         nextStateJson = null;
-                        nextPatchOverride = null;
-                        System.out.println("Client session reset (does not affect server).");
-                        break;
+                        System.out.println("Cleared pending stateJson full sync.");
+                    } else {
+                        System.out.println("Usage: state load <file.json> | state clear");
                     }
 
-                    default:
-                    	System.out.println("Unknown command: " + cmd + " (type 'help')");
+                } else if ("patch".equals(cmd)) {
+                    if (toks.size() < 2) {
+                        System.out.println("Usage: patch <patch.json>");
+                        continue;
+                    }
+                    Path p = Paths.get(toks.get(1));
+                    JsonNode n = om.readTree(readUtf8File(p));
+                    if (!n.isArray()) {
+                        System.out.println("patch.json must be a JSON array of [key,value] entries");
+                        continue;
+                    }
+                    nextPatchOverride = (ArrayNode) n;
+                    System.out.println("Loaded patch override for next dispatch.");
+
+                } else if ("clearpatch".equals(cmd)) {
+                    nextPatchOverride = null;
+                    System.out.println("Cleared pending patch override.");
+
+                } else if ("reset".equals(cmd)) {
+                    sessionId = null;
+                    sessionKey = null;
+                    lastPatch = null;
+                    lastFingerprint = null;
+                    cursor = 0;
+                    nextStateJson = null;
+                    nextPatchOverride = null;
+
+                    trackedStateRaw.clear();
+                    trackedFingerprint = StateFingerprint.fingerprintRawState(trackedStateRaw);
+
+                    System.out.println("Client session reset (does not affect server)." );
+
+                } else {
+                    System.out.println("Unknown command: " + cmd + " (type 'help')");
                 }
+
             } catch (Throwable t) {
                 System.out.println("ERROR: " + (t.getMessage() == null ? t.toString() : t.getMessage()));
             }
@@ -282,60 +289,66 @@ public final class ElaraRpcRepl {
     }
 
     private void printHelp() {
-        System.out.println(String.join("\n",
-            "Commands:",
-            "  ready [tsMillis]",
-            "      Send system/ready with deterministic preloaded scripts payload.",
-            "      Stores server sessionId/sessionKey and resets client patch chain + fingerprint + cursor.",
-            "",
-            "  send <type> <target> [value.json]",
-            "      Send an event. value.json is optional (defaults to null).",
-            "      Automatically includes sessionId/sessionKey after ready.",
-            "",
-            "  poll",
-            "      Poll server events once (uses current cursor).",
-            "",
-            "  follow [ms]",
-            "      Start polling events repeatedly (default 200ms).",
-            "  nofollow",
-            "      Stop event following.",
-            "",
-            "  show",
-            "      Show client session state (sessionId/sessionKey, fingerprint, patch size, cursor, pending overrides).",
-            "",
-            "  state load <state.json>",
-            "      Force a full sync on NEXT dispatch (legacy servers only).",
-            "  state clear",
-            "      Clear pending full sync.",
-            "",
-            "  patch <patch.json>",
-            "      Force a patch override on NEXT dispatch (legacy servers only).",
-            "  clearpatch",
-            "      Clear pending patch override.",
-            "",
-            "  reset",
-            "      Reset client session tracking (does not affect server).",
-            "",
-            "  quit / exit"
-        ));
+        String nl = "\n";
+        System.out.println(
+                "Commands:" + nl +
+                "  ready [tsMillis]" + nl +
+                "      Send system/ready with deterministic preloaded scripts payload." + nl +
+                "      Stores server sessionId/sessionKey and resets client patch chain + cursor." + nl +
+                nl +
+                "  send <type> <target> [value.json]" + nl +
+                "      Send an event. value.json is optional (defaults to null)." + nl +
+                "      Applies returned patch to tracked state and verifies fingerprint." + nl +
+                nl +
+                "  poll" + nl +
+                "      Poll server events once (uses current cursor)." + nl +
+                nl +
+                "  follow [ms] / nofollow" + nl +
+                "      Start/stop polling events." + nl +
+                nl +
+                "  show" + nl +
+                "      Show client session state + tracked fingerprint." + nl +
+                nl +
+                "  dumpstate" + nl +
+                "      Pretty-print client tracked state." + nl +
+                "  verify on|off" + nl +
+                "      Enable/disable fingerprint verification." + nl +
+                "  clearstate" + nl +
+                "      Clear tracked state and recompute fingerprint." + nl +
+                nl +
+                "  state load <state.json> | state clear" + nl +
+                "      Force full sync on NEXT dispatch (legacy servers only)." + nl +
+                nl +
+                "  patch <patch.json> | clearpatch" + nl +
+                "      Patch override for NEXT dispatch (legacy servers only)." + nl +
+                nl +
+                "  reset" + nl +
+                "      Reset client session tracking." + nl +
+                nl +
+                "  quit / exit"
+        );
     }
-
 
     // -----------------------------
     // High-level operations
     // -----------------------------
 
     private JsonNode doReady(Long tsMillis) throws Exception {
-        // Ready implies new boot; clear chain.
         lastPatch = null;
         lastFingerprint = null;
         cursor = 0;
         nextStateJson = null;
         nextPatchOverride = null;
 
-        // Deterministic preload closure
+        trackedStateRaw.clear();
+        trackedFingerprint = StateFingerprint.fingerprintRawState(trackedStateRaw);
+
         ElaraScriptPreloader preloader = new ElaraScriptPreloader(
-                normalized -> scriptsRootAbs.resolve(normalized)
+                new ElaraScriptPreloader.PathResolver() {
+                    @Override public Path resolve(String normalized) {
+                        return scriptsRootAbs.resolve(normalized);
+                    }
+                }
         );
 
         Map<String, Object> readyPayload = preloader.buildReadyPayload(
@@ -344,7 +357,6 @@ public final class ElaraRpcRepl {
                 null
         );
 
-        // dispatchEvent args
         ObjectNode args = om.createObjectNode();
         args.put("appScript", appScriptText);
 
@@ -356,8 +368,8 @@ public final class ElaraRpcRepl {
 
         JsonNode resp = rpcCall("dispatchEvent", args);
 
-        // Store sessionId/sessionKey if returned
         storeSessionFromResponse(resp);
+        applyTrackingFromDispatchResponse(resp);
 
         return resp;
     }
@@ -370,18 +382,15 @@ public final class ElaraRpcRepl {
         ObjectNode args = om.createObjectNode();
         args.put("appScript", appScriptText);
 
-        // Full sync wins if provided (legacy servers)
         if (nextStateJson != null && !nextStateJson.trim().isEmpty()) {
             args.put("stateJson", nextStateJson);
-            // consume it after use
             nextStateJson = null;
         } else {
-            // Otherwise patch-chaining (legacy servers)
             ArrayNode patchToSend = null;
 
             if (nextPatchOverride != null) {
                 patchToSend = nextPatchOverride;
-                nextPatchOverride = null; // consume after use
+                nextPatchOverride = null;
             } else if (lastPatch != null) {
                 patchToSend = lastPatch;
             }
@@ -396,7 +405,6 @@ public final class ElaraRpcRepl {
         ev.put("target", target);
         ev.set("value", valueObj == null ? NullNode.instance : om.valueToTree(valueObj));
 
-        // ✅ include session routing (new protocol)
         if (sessionId != null) ev.put("sessionId", sessionId);
         if (sessionKey != null) ev.put("sessionKey", sessionKey);
 
@@ -404,7 +412,6 @@ public final class ElaraRpcRepl {
 
         JsonNode resp = rpcCall("dispatchEvent", args);
 
-        // Update chain from response (if ok) - legacy behavior
         JsonNode ok = resp.get("ok");
         if (ok != null && ok.isBoolean() && ok.booleanValue()) {
             JsonNode result = resp.get("result");
@@ -415,7 +422,6 @@ public final class ElaraRpcRepl {
                 JsonNode fp = result.get("fingerprint");
                 if (fp != null && fp.isTextual()) lastFingerprint = fp.asText();
 
-                // Some servers may echo sessionId (or even sessionKey); accept sessionId always, key only if absent.
                 JsonNode sid = result.get("sessionId");
                 if (sid != null && sid.isTextual()) sessionId = sid.asText();
 
@@ -424,11 +430,40 @@ public final class ElaraRpcRepl {
             }
         }
 
+        applyTrackingFromDispatchResponse(resp);
+
         return resp;
     }
 
+    private void applyTrackingFromDispatchResponse(JsonNode resp) {
+        JsonNode ok = resp.get("ok");
+        if (ok == null || !ok.isBoolean() || !ok.booleanValue()) return;
+
+        JsonNode result = resp.get("result");
+        if (result == null || !result.isObject()) return;
+
+        JsonNode patchNode = result.get("patch");
+        JsonNode serverFpNode = result.get("fingerprint");
+        String serverFp = (serverFpNode != null && serverFpNode.isTextual()) ? serverFpNode.asText() : null;
+
+        applyPatchToState(trackedStateRaw, patchNode);
+        trackedFingerprint = StateFingerprint.fingerprintRawState(trackedStateRaw);
+
+        if (verifyFingerprints && serverFp != null) {
+            if (serverFp.equals(trackedFingerprint)) {
+                System.out.println("[TRACK] OK  fingerprint=" + trackedFingerprint + " keys=" + trackedStateRaw.size());
+            } else {
+                System.out.println("[TRACK] MISMATCH!");
+                System.out.println("  server=" + serverFp);
+                System.out.println("  local =" + trackedFingerprint);
+                List<String> ks = new ArrayList<String>(trackedStateRaw.keySet());
+                Collections.sort(ks);
+                System.out.println("  localKeysSorted=" + ks);
+            }
+        }
+    }
+
     private void storeSessionFromResponse(JsonNode resp) {
-        // expects rpc shape: { ok: true, result: { sessionId: "...", sessionKey: "..." } }
         JsonNode ok = resp.get("ok");
         if (ok == null || !ok.isBoolean() || !ok.booleanValue()) return;
 
@@ -454,7 +489,6 @@ public final class ElaraRpcRepl {
 
         JsonNode resp = rpcCall("pollEvents", args);
 
-        // Update cursor
         JsonNode ok = resp.get("ok");
         if (ok != null && ok.isBoolean() && ok.booleanValue()) {
             JsonNode result = resp.get("result");
@@ -468,31 +502,33 @@ public final class ElaraRpcRepl {
     // -----------------------------
     // Follow thread
     // -----------------------------
-    private void startFollow(int intervalMs) {
+    private void startFollow(final int intervalMs) {
         stopFollow();
         followRunning.set(true);
 
-        followThread = new Thread(() -> {
-            while (followRunning.get()) {
-                try {
-                    JsonNode resp = doPollOnce();
-                    JsonNode result = resp.path("result");
-                    JsonNode events = result.path("events");
-                    if (events.isArray() && events.size() > 0) {
-                        for (JsonNode ev : events) {
-                            try {
-                                System.out.println(pretty(ev));
-                            } catch (Exception ignored) {
-                                System.out.println(ev.toString());
+        followThread = new Thread(new Runnable() {
+            @Override public void run() {
+                while (followRunning.get()) {
+                    try {
+                        JsonNode resp = doPollOnce();
+                        JsonNode result = resp.path("result");
+                        JsonNode events = result.path("events");
+                        if (events.isArray() && events.size() > 0) {
+                            for (JsonNode ev : events) {
+                                try {
+                                    System.out.println(pretty(ev));
+                                } catch (Exception ignored) {
+                                    System.out.println(ev.toString());
+                                }
                             }
                         }
+                        Thread.sleep(intervalMs);
+                    } catch (InterruptedException ie) {
+                        return;
+                    } catch (Throwable t) {
+                        System.out.println("FOLLOW_ERROR: " + (t.getMessage() == null ? t.toString() : t.getMessage()));
+                        try { Thread.sleep(Math.max(250, intervalMs)); } catch (InterruptedException ignored) { return; }
                     }
-                    Thread.sleep(intervalMs);
-                } catch (InterruptedException ie) {
-                    return;
-                } catch (Throwable t) {
-                    System.out.println("FOLLOW_ERROR: " + (t.getMessage() == null ? t.toString() : t.getMessage()));
-                    try { Thread.sleep(Math.max(250, intervalMs)); } catch (InterruptedException ignored) { return; }
                 }
             }
         }, "elara-follow");
@@ -518,7 +554,8 @@ public final class ElaraRpcRepl {
         req.put("method", method);
         req.set("args", argsNode);
 
-        try (Socket socket = new Socket(host, port)) {
+        Socket socket = new Socket(host, port);
+        try {
             socket.setTcpNoDelay(true);
 
             InputStream in = new BufferedInputStream(socket.getInputStream());
@@ -529,26 +566,72 @@ public final class ElaraRpcRepl {
 
             byte[] respBytes = readFrame(in);
             return om.readTree(respBytes);
+        } finally {
+            try { socket.close(); } catch (IOException ignored) {}
         }
     }
 
     // -------------------------
-    // Framing
+    // Framing (Java 8 safe)
     // -------------------------
     private static byte[] readFrame(InputStream in) throws IOException {
-        byte[] lenBuf = in.readNBytes(4);
-        if (lenBuf.length < 4) throw new EOFException("partial length header");
+        byte[] lenBuf = readFully(in, 4);
         int len = ByteBuffer.wrap(lenBuf).order(ByteOrder.BIG_ENDIAN).getInt();
         if (len < 0 || len > MAX_FRAME) throw new IOException("bad frame length: " + len);
-        byte[] payload = in.readNBytes(len);
-        if (payload.length < len) throw new EOFException("partial frame payload");
-        return payload;
+        return readFully(in, len);
     }
 
     private static void writeFrame(OutputStream out, byte[] payload) throws IOException {
         byte[] lenBuf = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(payload.length).array();
         out.write(lenBuf);
         out.write(payload);
+    }
+
+    private static byte[] readFully(InputStream in, int n) throws IOException {
+        byte[] buf = new byte[n];
+        int off = 0;
+        while (off < n) {
+            int r = in.read(buf, off, n - off);
+            if (r < 0) throw new EOFException("EOF while reading " + n + " bytes");
+            off += r;
+        }
+        return buf;
+    }
+
+    // -------------------------
+    // Patch apply (new+legacy)
+    // -------------------------
+    private static void applyPatchToState(Map<String, Object> state, JsonNode patchNode) {
+        if (patchNode == null || patchNode.isNull()) return;
+
+        if (patchNode.isObject()) {
+            JsonNode set = patchNode.get("set");
+            if (set != null && set.isArray()) {
+                for (JsonNode kv : set) {
+                    if (!kv.isArray() || kv.size() < 2) continue;
+                    String k = kv.get(0).asText();
+                    Object v = om.convertValue(kv.get(1), Object.class);
+                    state.put(k, v);
+                }
+            }
+            JsonNode rem = patchNode.get("remove");
+            if (rem != null && rem.isArray()) {
+                for (JsonNode k : rem) {
+                    if (k != null && k.isTextual()) state.remove(k.asText());
+                }
+            }
+            return;
+        }
+
+        if (patchNode.isArray()) {
+            for (JsonNode kv : patchNode) {
+                if (!kv.isArray() || kv.size() < 2) continue;
+                String k = kv.get(0).asText();
+                JsonNode vNode = kv.get(1);
+                if (vNode == null || vNode.isNull()) state.remove(k);
+                else state.put(k, om.convertValue(vNode, Object.class));
+            }
+        }
     }
 
     // -------------------------
@@ -558,14 +641,10 @@ public final class ElaraRpcRepl {
         return om.writerWithDefaultPrettyPrinter().writeValueAsString(n);
     }
 
-    /**
-     * Args:
-     *   --host=127.0.0.1 --port=7777 --script=./scripts/events.es --scriptsRoot=./scripts
-     */
     private static Map<String, String> parseArgs(String[] args) {
-        Map<String, String> out = new HashMap<>();
+        Map<String, String> out = new HashMap<String, String>();
         for (String a : args) {
-            if (a.startsWith("--") && a.contains("=")) {
+            if (a.startsWith("--") && a.indexOf('=') >= 0) {
                 int i = a.indexOf('=');
                 out.put(a.substring(2, i), a.substring(i + 1));
             } else if (a.startsWith("--")) {
@@ -575,14 +654,8 @@ public final class ElaraRpcRepl {
         return out;
     }
 
-    /**
-     * Minimal shell-like tokenizer:
-     * - splits on whitespace
-     * - supports double quotes "..."
-     * - supports backslash escapes inside quotes
-     */
     private static List<String> shellSplit(String line) {
-        ArrayList<String> out = new ArrayList<>();
+        ArrayList<String> out = new ArrayList<String>();
         StringBuilder cur = new StringBuilder();
         boolean inQuotes = false;
         boolean escape = false;
@@ -619,5 +692,10 @@ public final class ElaraRpcRepl {
 
         if (cur.length() > 0) out.add(cur.toString());
         return out;
+    }
+
+    private static String readUtf8File(Path p) throws IOException {
+        byte[] bytes = Files.readAllBytes(p);
+        return new String(bytes, StandardCharsets.UTF_8);
     }
 }

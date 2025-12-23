@@ -166,6 +166,7 @@ public final class ElaraRpcServer implements Closeable {
 
                     resp.put("ok", true);
                     resp.set("result", resultNode);
+                    break;
                 }
 
                 case "pollEvents": {
@@ -177,16 +178,19 @@ public final class ElaraRpcServer implements Closeable {
                     ObjectNode result = pollEvents(cursor);
                     resp.put("ok", true);
                     resp.set("result", result);
+                    break;
                 }
 
                 case "ping": {
                     resp.put("ok", true);
                     resp.put("result", "pong");
+                    break;
                 }
 
                 default: {
                     resp.put("ok", false);
                     resp.put("error", "Unknown method: " + method);
+                    break;
                 }
             }
 

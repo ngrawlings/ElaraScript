@@ -2,6 +2,8 @@ package com.elara.protocol;
 
 import com.elara.protocol.util.StateDiff;
 import com.elara.protocol.util.StateFingerprint;
+import com.elara.protocol.util.JsonDeepCopy;
+
 import com.elara.script.ElaraScript;
 import com.elara.script.ElaraStateStore;
 
@@ -9,6 +11,7 @@ import java.security.SecureRandom;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -155,7 +158,7 @@ public final class ElaraEngineProtocol {
         }
 
         // --- Baseline is session-owned state (snapshot for diff) ---
-        Map<String, Object> rawInputs = new LinkedHashMap<>(session.stateRaw);
+        Map<String, Object> rawInputs = JsonDeepCopy.deepCopyMap(session.stateRaw);
 
         // Build env for script from baseline
         Map<String, ElaraScript.Value> initialEnv = new LinkedHashMap<>();
@@ -219,9 +222,12 @@ public final class ElaraEngineProtocol {
         // Extract JSON-safe view of captured env
         Map<String, Object> raw = outStore.toRawInputs();
 
-        // diff/fingerprint
-        Map<String, Object> diff = StateDiff.diff(rawInputs, raw).toPatchObject();
-        String fp = StateFingerprint.fingerprintRawState(raw);
+        // ✅ Diff/fingerprint only the actual persistent state map
+        Map<String, Object> beforeGlobals = asStringObjectMap(rawInputs.get("__global_state"));
+        Map<String, Object> afterGlobals  = asStringObjectMap(raw.get("__global_state"));
+
+        Map<String, Object> diff = StateDiff.diff(beforeGlobals, afterGlobals).toPatchObject();
+        String fp = StateFingerprint.fingerprintRawState(afterGlobals);
 
         // Update session-owned state to match the engine output
         synchronized (session) {
@@ -466,4 +472,24 @@ public final class ElaraEngineProtocol {
 
         throw new RuntimeException("Unsupported value type: " + v.getClass().getName());
     }
+    
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> asStringObjectMap(Object v) {
+        if (v == null) return Collections.emptyMap();
+        if (!(v instanceof Map<?, ?>)) {
+            throw new IllegalArgumentException("__global_state must be a Map, got: " + v.getClass().getName());
+        }
+        Map<?, ?> m = (Map<?, ?>) v;
+        // validate string keys + cast
+        Map<String, Object> out = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> e : m.entrySet()) {
+            Object k = e.getKey();
+            if (!(k instanceof String)) {
+                throw new IllegalArgumentException("__global_state key must be String, got: " + (k == null ? "null" : k.getClass().getName()));
+            }
+            out.put((String) k, (Object) e.getValue());
+        }
+        return out;
+    }
+
 }
