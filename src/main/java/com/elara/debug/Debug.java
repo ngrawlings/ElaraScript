@@ -44,4 +44,27 @@ public final class Debug {
     public void log(DebugLevel level, String tag, String message, Throwable error) {
         sinkRef.get().log(level, tag, message, error);
     }
+    
+    public static void useSysOut() {
+        get().setSink(new DebugSink() {
+            @Override
+            public void log(DebugLevel level, String tag, String message, Throwable error) {
+                StringBuilder sb = new StringBuilder();
+                sb.append('[')
+                  .append(level.name())
+                  .append(']')
+                  .append(' ')
+                  .append(tag)
+                  .append(": ")
+                  .append(message == null ? "" : message);
+
+                System.out.println(sb.toString());
+
+                if (error != null) {
+                    error.printStackTrace(System.out);
+                }
+            }
+        });
+    }
+    
 }

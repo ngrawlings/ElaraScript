@@ -2,6 +2,7 @@ package com.elara.protocol;
 
 import com.elara.protocol.util.StateDiff;
 import com.elara.protocol.util.StateFingerprint;
+import com.elara.protocol.util.FingerprintTraceOut;
 import com.elara.protocol.util.JsonDeepCopy;
 
 import com.elara.script.ElaraScript;
@@ -227,7 +228,7 @@ public final class ElaraEngineProtocol {
         Map<String, Object> afterGlobals  = asStringObjectMap(raw.get("__global_state"));
 
         Map<String, Object> diff = StateDiff.diff(beforeGlobals, afterGlobals).toPatchObject();
-        String fp = StateFingerprint.fingerprintRawState(afterGlobals);
+        String fp = StateFingerprint.fingerprintRawState(afterGlobals, new FingerprintTraceOut());
 
         // Update session-owned state to match the engine output
         synchronized (session) {

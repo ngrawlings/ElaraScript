@@ -1,5 +1,6 @@
 package com.elara.script.rpc;
 
+import com.elara.debug.Debug;
 import com.elara.protocol.ElaraEngineProtocol;
 import com.elara.script.ElaraScript;
 
@@ -57,6 +58,8 @@ public final class ElaraRpcServer implements Closeable {
     public ElaraRpcServer(int port, int threads) {
         this.port = port;
         this.pool = Executors.newFixedThreadPool(Math.max(1, threads));
+        
+        Debug.useSysOut();
 
         // Wire protocol with non-Android builtins + console logger
         this.protocol = new ElaraEngineProtocol(
