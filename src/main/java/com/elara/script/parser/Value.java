@@ -46,10 +46,14 @@ public class Value {
     public static final class ClassInstance {
         public final String className;
         public final String uuid;
+        
+        // This is the master reference, environments may hold references for a time, originating from here
+        public final Map<String, Value> _this;
 
         public ClassInstance(String className, String uuid) {
             this.className = className;
             this.uuid = uuid;
+            this._this = new LinkedHashMap<>();
         }
 
         public String stateKey() {

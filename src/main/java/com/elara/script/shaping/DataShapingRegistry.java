@@ -1,11 +1,11 @@
-package com.elara.script.parser;
+package com.elara.script.shaping;
 
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
-import com.elara.script.shaping.ElaraDataShaper;
+import com.elara.script.parser.Value;
 
 /**
  * Registry of named shapes.

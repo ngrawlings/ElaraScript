@@ -39,6 +39,7 @@ import com.elara.script.parser.Statement.Stmt;
 import com.elara.script.parser.Statement.StmtVisitor;
 import com.elara.script.parser.Statement.VarStmt;
 import com.elara.script.parser.Statement.While;
+import com.elara.script.shaping.DataShapingRegistry;
 import com.elara.script.shaping.ElaraDataShaper;
 
 
@@ -180,7 +181,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
 
     public void visitBlockStmt(Block stmt) {
         Environment previous = this.env;
-        this.env = env.childScope();
+        this.env = env.childScope(previous.instance_owner, previous.vars);
         try {
             for (Stmt s : stmt.statements) s.accept(this);
         } finally {
@@ -904,7 +905,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
             }
 
             Environment previous = interpreter.env;
-            interpreter.env = new Environment(closure);
+            interpreter.env = previous.childScope(null, closure.vars);
             try {
             	for (int i = 0; i < params.size(); i++) {
             	    String pRaw = params.get(i).lexeme;     // e.g. "user_payload??"
@@ -937,7 +938,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
             }
 
             Environment previous = interpreter.env;
-            interpreter.env = new Environment(closure);
+            interpreter.env = previous.childScope(thisValue.asClassInstance(), closure.vars);
             try {
                 // Inject `this` FIRST
                 interpreter.env.define("this", thisValue);

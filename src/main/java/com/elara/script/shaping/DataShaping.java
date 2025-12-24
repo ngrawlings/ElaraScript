@@ -1,9 +1,9 @@
-package com.elara.script.parser;
+package com.elara.script.shaping;
 
 import java.util.List;
 import java.util.Map;
 
-import com.elara.script.shaping.ElaraDataShaper;
+import com.elara.script.parser.Value;
 
 public class DataShaping {
 

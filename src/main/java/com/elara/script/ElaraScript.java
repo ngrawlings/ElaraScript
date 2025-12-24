@@ -1,6 +1,5 @@
 package com.elara.script;
 
-import com.elara.script.parser.DataShapingRegistry;
 import com.elara.script.parser.EntryRunResult;
 import com.elara.script.parser.Environment;
 import com.elara.script.parser.Interpreter;
@@ -13,6 +12,7 @@ import com.elara.script.parser.Statement.Stmt;
 import com.elara.script.parser.Statement.While;
 import com.elara.script.parser.Token;
 import com.elara.script.parser.Value;
+import com.elara.script.shaping.DataShapingRegistry;
 import com.elara.script.shaping.ElaraDataShaper;
 
 import java.util.*;
