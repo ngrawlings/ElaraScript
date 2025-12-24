@@ -306,6 +306,18 @@ public class ElaraScript {
             out.putAll(vars);
             return out;
         }
+        
+        void remove(String name) {
+            if (vars.containsKey(name)) {
+                vars.remove(name);
+                return;
+            }
+            if (parent != null) {
+                parent.remove(name);
+                return;
+            }
+            // if you prefer: ignore missing vs throw
+        }
     }
 
     // ===================== LEXER =====================
@@ -327,7 +339,7 @@ public class ElaraScript {
 
         LET, IF, ELSE, WHILE, FOR, TRUE, FALSE, NULL,
         FUNCTION, RETURN, BREAK,
-        CLASS, DEF, NEW,
+        CLASS, DEF, NEW, FREE,
 
         EOF
     }
@@ -368,6 +380,7 @@ public class ElaraScript {
             map.put("class", TokenType.CLASS);
             map.put("def", TokenType.DEF);
             map.put("new", TokenType.NEW);
+            map.put("free", TokenType.FREE);
             map.put("return", TokenType.RETURN);
             map.put("break", TokenType.BREAK);
             keywords = Collections.unmodifiableMap(map);
@@ -692,6 +705,17 @@ public class ElaraScript {
         void visitClassStmt(ClassStmt stmt);
         void visitReturnStmt(ReturnStmt stmt);
         void visitBreakStmt(BreakStmt stmt);
+        void visitFreeStmt(FreeStmt stmt);
+    }
+    
+    private static final class FreeStmt implements Stmt {
+        final Token keyword;
+        final Expr target;
+        FreeStmt(Token keyword, Expr target) {
+            this.keyword = keyword;
+            this.target = target;
+        }
+        public void accept(StmtVisitor visitor) { visitor.visitFreeStmt(this); }
     }
 
     private static final class ExprStmt implements Stmt {
@@ -904,6 +928,7 @@ public class ElaraScript {
             if (match(TokenType.FOR)) return forStatement();
             if (match(TokenType.RETURN)) return returnStatement();
             if (match(TokenType.BREAK)) return breakStatement();
+            if (match(TokenType.FREE)) return freeStatement();
             if (match(TokenType.LEFT_BRACE)) return new Block(block());
             return exprStatement();
         }
@@ -925,6 +950,13 @@ public class ElaraScript {
             }
             consume(TokenType.SEMICOLON, "Expect ';' after return value.");
             return new ReturnStmt(keyword, value);
+        }
+        
+        private Stmt freeStatement() {
+            Token keyword = previous();          // 'free'
+            Expr target = expression();          // allow `free x;` or `free (x);`
+            consume(TokenType.SEMICOLON, "Expect ';' after free target.");
+            return new FreeStmt(keyword, target);
         }
 
         private Stmt ifStatement() {
@@ -1281,6 +1313,12 @@ public class ElaraScript {
         private final int maxDepth;
         private final Mode mode;
         private final SystemErrorReporter errorReporter;
+        
+        private static final String TR_CLASS = "TryCallResult";
+        
+        private interface NativeMethod {
+            Value call(Interpreter interpreter, Value thisValue, List<Value> args);
+        }
 
         Interpreter(Environment env, Map<String, BuiltinFunction> functions, DataShapingRegistry shapingRegistry, int maxDepth, Mode mode, SystemErrorReporter errorReporter) {
             this.env = env;
@@ -1650,6 +1688,81 @@ public class ElaraScript {
             return eval(expr.right);
         }
 
+        private void ensureTryCallResultClass() {
+            if (classes.containsKey(TR_CLASS)) return;
+
+            LinkedHashMap<String, Object> methods = new LinkedHashMap<>();
+
+            // r.result() -> bool
+            methods.put("result", (NativeMethod) (itp, thisValue, a) -> {
+                Value.ClassInstance inst = thisValue.asClassInstance();
+                Value st = itp.env.get(inst.stateKey());
+                Map<String, Value> m = st.asMap();
+                Value v = (m == null) ? Value.nil() : m.get("result");
+                return (v == null) ? Value.bool(false) : v;
+            });
+
+            // r.value() -> any
+            methods.put("value", (NativeMethod) (itp, thisValue, a) -> {
+                Value.ClassInstance inst = thisValue.asClassInstance();
+                Value st = itp.env.get(inst.stateKey());
+                Map<String, Value> m = st.asMap();
+                Value v = (m == null) ? Value.nil() : m.get("value");
+                return (v == null) ? Value.nil() : v;
+            });
+
+            // r.error() -> array<string> (always)
+            methods.put("error", (NativeMethod) (itp, thisValue, a) -> {
+                Value.ClassInstance inst = thisValue.asClassInstance();
+                Value st = itp.env.get(inst.stateKey());
+                Map<String, Value> m = st.asMap();
+                Value v = (m == null) ? null : m.get("error");
+                if (v == null || v.getType() != Value.Type.ARRAY) return Value.array(new ArrayList<>());
+                return v;
+            });
+
+            Value.ClassDescriptor desc = new Value.ClassDescriptor(TR_CLASS, methods);
+            classes.put(TR_CLASS, desc);
+
+            // Optional: also expose as a global CLASS value if you want (not required for trycall)
+            // env.define(TR_CLASS, new Value(Value.Type.CLASS, desc));
+        }
+
+        private Value makeTryCallResult(boolean ok, Value valueOrNull, List<String> errors) {
+            // Allocate instance id
+            String uuid = java.util.UUID.randomUUID().toString();
+            String key = TR_CLASS + "." + uuid; // use constant
+
+            // State map stored in env under "TryCallResult.<uuid>"
+            LinkedHashMap<String, Value> state = new LinkedHashMap<>();
+            state.put("result", Value.bool(ok)); // <-- FIX (was "ok")
+            state.put("value", (valueOrNull == null) ? Value.nil() : valueOrNull);
+
+            // errors is ALWAYS an array<string>
+            List<Value> errArr = new ArrayList<>();
+            if (errors != null) {
+                for (String s : errors) errArr.add(Value.string(s == null ? "" : s));
+            }
+            state.put("error", Value.array(errArr));
+
+            env.define(key, Value.map(state));
+
+            Value.ClassInstance inst = new Value.ClassInstance(TR_CLASS, uuid);
+            return new Value(Value.Type.CLASS_INSTANCE, inst);
+        }
+        
+        private Value tryReadTryCallField(Value.ClassInstance inst, String field) {
+            // Look up state map: env["TryCallResult.<uuid>"]
+            String key = inst.stateKey();
+            Value st = env.exists(key) ? env.get(key) : Value.nil();
+            if (st.getType() != Value.Type.MAP) return Value.nil();
+
+            Map<String, Value> m = st.asMap();
+            if (m == null) return Value.nil();
+            Value v = m.get(field);
+            return (v == null) ? Value.nil() : v;
+        }
+
         public Value visitCallExpr(Call expr) {
             if (!(expr.callee instanceof Variable)) throw new RuntimeException("Invalid function call target");
             String name = ((Variable) expr.callee).name.lexeme;
@@ -1669,6 +1782,27 @@ public class ElaraScript {
                 args.addAll(v.asArray());
             }
 
+            if ("trycall".equals(name)) {
+                if (args.isEmpty()) {
+                    return makeTryCallResult(false, Value.nil(), List.of("trycall() expects at least 1 argument (fnName)"));
+                }
+                Value fnNameVal = args.get(0);
+                if (fnNameVal.getType() != Value.Type.STRING) {
+                    return makeTryCallResult(false, Value.nil(), List.of("trycall() first argument must be a string function name"));
+                }
+
+                String targetName = fnNameVal.asString();
+                List<Value> rest = (args.size() == 1) ? Collections.emptyList() : args.subList(1, args.size());
+
+                try {
+                    // IMPORTANT: catch *everything* from inside the invocation path
+                    Value out = invokeByName(targetName, rest);
+                    return makeTryCallResult(true, out, Collections.emptyList());
+                } catch (RuntimeException e) {
+                    String msg = (e.getMessage() == null) ? e.toString() : e.getMessage();
+                    return makeTryCallResult(false, Value.nil(), List.of(msg));
+                }
+            }
 
             // varexists("varName") -> bool
             if ("varexists".equals(name)) {
@@ -1780,20 +1914,75 @@ public class ElaraScript {
 
             Value.ClassInstance inst = recv.asClassInstance();
 
+            // Ensure the pseudo-class exists so .result()/.value()/.error() resolve
+            if (TR_CLASS.equals(inst.className)) {
+                ensureTryCallResultClass();
+            }
+
+            // --- SPECIAL META-METHOD: instance.trycall("methodName", ...args) ---
+            if ("trycall".equals(expr.method.lexeme)) {
+                // args: ("methodName", ...actualArgs)
+                if (expr.args == null || expr.args.size() < 1) {
+                    return makeTryCallResult(false, Value.nil(),
+                            List.of("trycall(methodName, ...args) expects at least 1 argument"));
+                }
+
+                Value methodNameV = eval(expr.args.get(0));
+                if (methodNameV.getType() != Value.Type.STRING) {
+                    return makeTryCallResult(false, Value.nil(),
+                            List.of("trycall first argument must be a string method name"));
+                }
+
+                String methodName = methodNameV.asString();
+
+                // evaluate remaining args
+                List<Value> callArgs = new ArrayList<>();
+                for (int i = 1; i < expr.args.size(); i++) {
+                    callArgs.add(eval(expr.args.get(i)));
+                }
+
+                try {
+                    Value.ClassInstance inst1 = recv.asClassInstance();
+                    Value.ClassDescriptor desc = classes.get(inst.className);
+                    if (desc == null) {
+                        return makeTryCallResult(false, Value.nil(), List.of("Unknown class: " + inst1.className));
+                    }
+
+                    Object fnObj = desc.methods.get(methodName);
+                    if (!(fnObj instanceof UserFunction)) {
+                        return makeTryCallResult(false, Value.nil(),
+                                List.of("Unknown method: " + inst1.className + "." + methodName));
+                    }
+
+                    Value out = ((UserFunction) fnObj).callWithThis(this, recv, callArgs);
+                    return makeTryCallResult(true, out, Collections.emptyList());
+                } catch (RuntimeException e) {
+                    String msg = (e.getMessage() == null) ? e.toString() : e.getMessage();
+                    return makeTryCallResult(false, Value.nil(), List.of(msg));
+                }
+            }
+
+            // normal method dispatch (NOW supports NativeMethod too)
             Value.ClassDescriptor desc = classes.get(inst.className);
             if (desc == null) {
                 throw new RuntimeException("Unknown class: " + inst.className);
             }
 
             Object fnObj = desc.methods.get(expr.method.lexeme);
-            if (!(fnObj instanceof UserFunction)) {
-                throw new RuntimeException("Unknown method: " + inst.className + "." + expr.method.lexeme);
-            }
 
+            // Evaluate args once
             List<Value> args = new ArrayList<>();
             for (Expr a : expr.args) args.add(eval(a));
 
-            return ((UserFunction) fnObj).callWithThis(this, recv, args);
+            if (fnObj instanceof NativeMethod) {
+                return ((NativeMethod) fnObj).call(this, recv, args);
+            }
+
+            if (fnObj instanceof UserFunction) {
+                return ((UserFunction) fnObj).callWithThis(this, recv, args);
+            }
+
+            throw new RuntimeException("Unknown method: " + inst.className + "." + expr.method.lexeme);
         }
 
         private Value callMethodWithThis(UserFunction fn, Value thisValue, List<Value> args) {
@@ -2058,6 +2247,31 @@ public class ElaraScript {
 		    }
 		    return evalNew(expr.className.lexeme, args);
 		}
+
+		@Override
+		public void visitFreeStmt(FreeStmt stmt) {
+		    Value v = eval(stmt.target);
+
+		    if (v.getType() != Value.Type.CLASS_INSTANCE) {
+		        throw new RuntimeException("free expects a class instance");
+		    }
+
+		    Value.ClassInstance inst = v.asClassInstance();
+		    Value.ClassDescriptor desc = classes.get(inst.className);
+		    if (desc == null) throw new RuntimeException("Unknown class: " + inst.className);
+
+		    // call on_free if present
+		    Object fnObj = desc.methods.get("on_free");
+		    if (fnObj instanceof UserFunction) {
+		        ((UserFunction) fnObj).callWithThis(this, v, Collections.emptyList());
+		    }
+
+		    // remove state
+		    String key = inst.stateKey(); // class.uuid
+		    // IMPORTANT: you can't currently delete from env via API, so add a method:
+		    env.remove(key);  // implement below
+		}
+
 
 
     }
