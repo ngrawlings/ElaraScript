@@ -1,5 +1,7 @@
 import com.elara.script.ElaraScript;
-import com.elara.script.ElaraScript.Value;
+import com.elara.script.parser.EntryRunResult;
+import com.elara.script.parser.Value;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
@@ -68,7 +70,7 @@ public class ElaraScriptErrorHandlingModesTest {
             ""
         );
 
-        ElaraScript.EntryRunResult rr =
+        EntryRunResult rr =
                 assertDoesNotThrow(() -> es.runWithEntryResult(src, "main", null, null));
 
         assertTrue(rr.env().get("seen").asBool(), "expected callback to run");

@@ -9,6 +9,8 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
+import com.elara.script.parser.Value;
+
 public final class ElaraCli {
 
     public static void main(String[] args) {
@@ -38,7 +40,7 @@ public final class ElaraCli {
         // (e.g., call(...), invoke(...), apply(...)). See note after code.
         engine.registerFunction("readLine", new ElaraScript.BuiltinFunction() {
             @Override
-            public ElaraScript.Value call(List<ElaraScript.Value> args) {
+            public Value call(List<Value> args) {
                 if (args != null && !args.isEmpty()) {
                     throw new IllegalArgumentException("readLine() takes no arguments");
                 }
@@ -46,7 +48,7 @@ public final class ElaraCli {
                     String line = stdin.readLine(); // blocks
                     // If your Value class has no NULL constructor/factory, return "" on EOF:
                     if (line == null) line = "";
-                    return ElaraScript.Value.string(line);
+                    return Value.string(line);
                 } catch (IOException ioe) {
                     throw new RuntimeException("readLine() failed: " + ioe.getMessage(), ioe);
                 }
@@ -55,13 +57,13 @@ public final class ElaraCli {
 
         try {
             // Your run(...) returns Map<String, Value>
-            Map<String, ElaraScript.Value> outputs = engine.run(script);
+            Map<String, Value> outputs = engine.run(script);
 
             // Print captured outputs (stable + minimal assumptions)
             if (outputs == null || outputs.isEmpty()) {
                 System.out.println("(no outputs)");
             } else {
-                for (Map.Entry<String, ElaraScript.Value> e : outputs.entrySet()) {
+                for (Map.Entry<String, Value> e : outputs.entrySet()) {
                     System.out.println(e.getKey() + " = " + String.valueOf(e.getValue()));
                 }
             }

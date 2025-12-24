@@ -1,10 +1,12 @@
 import com.elara.script.ElaraScript;
+import com.elara.script.parser.EntryRunResult;
+import com.elara.script.parser.Value;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
 
-import static com.elara.script.ElaraScript.Value;
 import static org.junit.jupiter.api.Assertions.*;
 
 public class ElaraScriptEntryArgsContractTest {
@@ -27,7 +29,7 @@ public class ElaraScriptEntryArgsContractTest {
                 Value.array(List.of(Value.string("ts"), Value.number(123)))
         ));
 
-        ElaraScript.EntryRunResult rr = es.runWithEntryResult(
+        EntryRunResult rr = es.runWithEntryResult(
                 src,
                 "event_system_ready",
                 List.of(Value.string("system"), Value.string("ready"), payload),

@@ -1,7 +1,7 @@
 package com.elara.script.plugins;
 
 import com.elara.script.ElaraScript;
-import com.elara.script.ElaraScript.Value;
+import com.elara.script.parser.Value;
 
 public final class ElaraBitwiseBytesPlugin {
 

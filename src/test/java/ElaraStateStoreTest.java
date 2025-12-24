@@ -2,6 +2,7 @@ import org.junit.jupiter.api.Test;
 
 import com.elara.script.ElaraScript;
 import com.elara.script.ElaraStateStore;
+import com.elara.script.parser.Value;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -127,15 +128,15 @@ public class ElaraStateStoreTest {
     void captureOutputs_converts_values_to_json_safe() {
         ElaraStateStore store = new ElaraStateStore();
 
-        Map<String, ElaraScript.Value> outputs = new LinkedHashMap<>();
-        outputs.put("n", ElaraScript.Value.number(3.14));
-        outputs.put("b", ElaraScript.Value.bool(true));
-        outputs.put("s", ElaraScript.Value.string("hi"));
-        outputs.put("z", ElaraScript.Value.nil());
-        outputs.put("a", ElaraScript.Value.array(List.of(
-                ElaraScript.Value.number(1),
-                ElaraScript.Value.nil(),
-                ElaraScript.Value.string("x")
+        Map<String, Value> outputs = new LinkedHashMap<>();
+        outputs.put("n", Value.number(3.14));
+        outputs.put("b", Value.bool(true));
+        outputs.put("s", Value.string("hi"));
+        outputs.put("z", Value.nil());
+        outputs.put("a", Value.array(List.of(
+                Value.number(1),
+                Value.nil(),
+                Value.string("x")
         )));
 
         store.captureOutputs(outputs);
@@ -159,11 +160,11 @@ public class ElaraStateStoreTest {
     void captureEnv_and_restore_as_inputs() {
         ElaraStateStore store = new ElaraStateStore();
 
-        Map<String, ElaraScript.Value> env = new LinkedHashMap<>();
-        env.put("weightKg", ElaraScript.Value.number(80));
-        env.put("durationMin", ElaraScript.Value.number(40));
-        env.put("intensity", ElaraScript.Value.number(5));
-        env.put("calories", ElaraScript.Value.number(280));
+        Map<String, Value> env = new LinkedHashMap<>();
+        env.put("weightKg", Value.number(80));
+        env.put("durationMin", Value.number(40));
+        env.put("intensity", Value.number(5));
+        env.put("calories", Value.number(280));
 
         store.captureEnv(env);
         String json = store.toJson();

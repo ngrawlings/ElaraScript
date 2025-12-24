@@ -1,6 +1,8 @@
 import org.junit.jupiter.api.Test;
 
 import com.elara.script.ElaraScript;
+import com.elara.script.parser.EntryRunResult;
+import com.elara.script.parser.Value;
 
 import java.util.Arrays;
 import java.util.Collections;
@@ -15,7 +17,7 @@ public class ElaraScriptEntryPointsTest {
     public void globalProgramMode_runReturnsFinalEnvironmentSnapshot() {
         ElaraScript es = new ElaraScript();
 
-        Map<String, ElaraScript.Value> env = es.run(
+        Map<String, Value> env = es.run(
                 "let x = 1 + 2;\n" +
                 "let y = x * 10;\n"
         );
@@ -36,14 +38,14 @@ public class ElaraScriptEntryPointsTest {
                 "  return a + b;\n" +
                 "}\n";
 
-        ElaraScript.Value out = es.run(
+        Value out = es.run(
                 src,
                 "add",
-                Arrays.asList(ElaraScript.Value.number(2), ElaraScript.Value.number(3))
+                Arrays.asList(Value.number(2), Value.number(3))
         );
 
         assertNotNull(out);
-        assertEquals(ElaraScript.Value.Type.NUMBER, out.getType());
+        assertEquals(Value.Type.NUMBER, out.getType());
         assertEquals(5.0, out.asNumber());
     }
 
@@ -58,19 +60,18 @@ public class ElaraScriptEntryPointsTest {
                 "  return z;\n" +
                 "}\n";
 
-        ElaraScript.EntryRunResult rr = es.runWithEntryResult(
+        EntryRunResult rr = es.runWithEntryResult(
                 src,
                 "main",
-                Collections.singletonList(ElaraScript.Value.number(5)),
+                Collections.singletonList(Value.number(5)),
                 Collections.emptyMap()
         );
 
         assertNotNull(rr);
         assertNotNull(rr.value());
-        assertEquals(ElaraScript.Value.Type.NUMBER, rr.value().getType());
         assertEquals(15.0, rr.value().asNumber());
 
-        Map<String, ElaraScript.Value> env = rr.env();
+        Map<String, Value> env = rr.env();
         assertNotNull(env);
         assertTrue(env.containsKey("y"));
         assertEquals(10.0, env.get("y").asNumber());

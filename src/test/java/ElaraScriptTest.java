@@ -1,6 +1,7 @@
 import org.junit.jupiter.api.Test;
 
 import com.elara.script.ElaraScript;
+import com.elara.script.parser.Value;
 
 import java.util.Map;
 
@@ -8,8 +9,8 @@ import static org.junit.jupiter.api.Assertions.*;
 
 public class ElaraScriptTest {
 
-    private static ElaraScript.Value v(Map<String, ElaraScript.Value> env, String name) {
-        ElaraScript.Value val = env.get(name);
+    private static Value v(Map<String, Value> env, String name) {
+        Value val = env.get(name);
         assertNotNull(val, "Expected variable in env: " + name);
         return val;
     }
@@ -17,7 +18,7 @@ public class ElaraScriptTest {
     @Test
     void letAndAssignment_number() {
         ElaraScript es = new ElaraScript();
-        Map<String, ElaraScript.Value> env = es.run(
+        Map<String, Value> env = es.run(
                 "let x = 10;\n" +
                 "x = x + 5;\n" +
                 "let y = x;\n"
@@ -30,7 +31,7 @@ public class ElaraScriptTest {
     @Test
     void arithmetic_precedence() {
         ElaraScript es = new ElaraScript();
-        Map<String, ElaraScript.Value> env = es.run(
+        Map<String, Value> env = es.run(
                 "let a = 2 + 3 * 4;\n" +
                 "let b = (2 + 3) * 4;\n" +
                 "let c = 10 / 2 + 6;\n" +
@@ -48,7 +49,7 @@ public class ElaraScriptTest {
     @Test
     void comparisonsAndEquality() {
         ElaraScript es = new ElaraScript();
-        Map<String, ElaraScript.Value> env = es.run(
+        Map<String, Value> env = es.run(
                 "let a = 3;\n" +
                 "let b = 5;\n" +
                 "let lt = a < b;\n" +
@@ -71,11 +72,11 @@ public class ElaraScriptTest {
     void logicalOperators_shortCircuit_or_and() {
         ElaraScript es = new ElaraScript();
 
-        Map<String, ElaraScript.Value> env1 =
+        Map<String, Value> env1 =
                 es.run("let ok = true || doesNotExist(1);\n");
         assertTrue(v(env1, "ok").asBool());
 
-        Map<String, ElaraScript.Value> env2 =
+        Map<String, Value> env2 =
                 es.run("let ok = false && doesNotExist(1);\n");
         assertFalse(v(env2, "ok").asBool());
 
@@ -86,7 +87,7 @@ public class ElaraScriptTest {
     @Test
     void unaryOperators_not_and_negation() {
         ElaraScript es = new ElaraScript();
-        Map<String, ElaraScript.Value> env = es.run(
+        Map<String, Value> env = es.run(
                 "let a = !false;\n" +
                 "let b = !(1);\n" +
                 "let c = -5;\n" +
@@ -111,7 +112,7 @@ public class ElaraScriptTest {
                 "let y = inner;\n"
         ));
 
-        Map<String, ElaraScript.Value> env = es.run(
+        Map<String, Value> env = es.run(
                 "let x = 2;\n" +
                 "let y = 0;\n" +
                 "if (x > 1) {\n" +
@@ -127,7 +128,7 @@ public class ElaraScriptTest {
     @Test
     void whileLoop_basic_accumulator() {
         ElaraScript es = new ElaraScript();
-        Map<String, ElaraScript.Value> env = es.run(
+        Map<String, Value> env = es.run(
                 "let i = 0;\n" +
                 "let total = 0;\n" +
                 "while (i < 5) {\n" +
@@ -143,7 +144,7 @@ public class ElaraScriptTest {
     @Test
     void arrays_literal_index_len() {
         ElaraScript es = new ElaraScript();
-        Map<String, ElaraScript.Value> env = es.run(
+        Map<String, Value> env = es.run(
                 "let v = [10, 20, 30];\n" +
                 "let a = v[0];\n" +
                 "let b = v[2];\n" +
@@ -159,7 +160,7 @@ public class ElaraScriptTest {
     void spreadOperator_expandsArrayIntoCallArguments() {
         ElaraScript es = new ElaraScript();
 
-        Map<String, ElaraScript.Value> env = es.run(
+        Map<String, Value> env = es.run(
                 "function add3(a, b, c) { return a + b + c; }\n" +
                 "let args = [2, 3];\n" +
                 "let out = add3(1, **args);\n"

@@ -1,4 +1,6 @@
 import com.elara.script.ElaraScript;
+import com.elara.script.parser.Value;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.LinkedHashMap;
@@ -19,13 +21,13 @@ public class ElaraScriptIndexAssignmentTest {
             ""
         );
 
-        Map<String, ElaraScript.Value> env = es.run(src);
+        Map<String, Value> env = es.run(src);
 
-        ElaraScript.Value a = env.get("a");
+        Value a = env.get("a");
         assertNotNull(a);
-        assertEquals(ElaraScript.Value.Type.ARRAY, a.getType());
+        assertEquals(Value.Type.ARRAY, a.getType());
 
-        List<ElaraScript.Value> arr = a.asArray();
+        List<Value> arr = a.asArray();
         assertEquals(3, arr.size());
         assertEquals(1.0, arr.get(0).asNumber());
         assertEquals(9.0, arr.get(1).asNumber());
@@ -42,9 +44,9 @@ public class ElaraScriptIndexAssignmentTest {
             ""
         );
 
-        Map<String, ElaraScript.Value> env = es.run(src);
+        Map<String, Value> env = es.run(src);
 
-        List<ElaraScript.Value> arr = env.get("a").asArray();
+        List<Value> arr = env.get("a").asArray();
         assertEquals(2, arr.size());
         assertEquals(1.0, arr.get(0).asNumber());
         assertEquals(2.0, arr.get(1).asNumber());
@@ -60,9 +62,9 @@ public class ElaraScriptIndexAssignmentTest {
             ""
         );
 
-        Map<String, ElaraScript.Value> env = es.run(src);
+        Map<String, Value> env = es.run(src);
 
-        List<ElaraScript.Value> kv = env.get("kv").asArray();
+        List<Value> kv = env.get("kv").asArray();
         assertEquals("ts", kv.get(0).asString());
         assertEquals(2.0, kv.get(1).asNumber());
     }
@@ -71,19 +73,19 @@ public class ElaraScriptIndexAssignmentTest {
     void bytes_index_assignment_sets_byte_value() {
         ElaraScript es = new ElaraScript();
 
-        Map<String, ElaraScript.Value> initial = new LinkedHashMap<>();
-        initial.put("b", ElaraScript.Value.bytes(new byte[] { 1, 2, 3 }));
+        Map<String, Value> initial = new LinkedHashMap<>();
+        initial.put("b", Value.bytes(new byte[] { 1, 2, 3 }));
 
         String src = String.join("\n",
             "b[1] = 255;",
             ""
         );
 
-        Map<String, ElaraScript.Value> env = es.run(src, initial);
+        Map<String, Value> env = es.run(src, initial);
 
-        ElaraScript.Value b = env.get("b");
+        Value b = env.get("b");
         assertNotNull(b);
-        assertEquals(ElaraScript.Value.Type.BYTES, b.getType());
+        assertEquals(Value.Type.BYTES, b.getType());
 
         byte[] bb = b.asBytes();
         assertArrayEquals(new byte[] { 1, (byte) 255, 3 }, bb);
@@ -93,8 +95,8 @@ public class ElaraScriptIndexAssignmentTest {
     void bytes_assignment_rejects_out_of_range() {
         ElaraScript es = new ElaraScript();
 
-        Map<String, ElaraScript.Value> initial = new LinkedHashMap<>();
-        initial.put("b", ElaraScript.Value.bytes(new byte[] { 0 }));
+        Map<String, Value> initial = new LinkedHashMap<>();
+        initial.put("b", Value.bytes(new byte[] { 0 }));
 
         String src = String.join("\n",
             "b[0] = 256;",

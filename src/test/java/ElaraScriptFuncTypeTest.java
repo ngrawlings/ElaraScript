@@ -1,6 +1,7 @@
 import org.junit.jupiter.api.Test;
 
 import com.elara.script.ElaraScript;
+import com.elara.script.parser.Value;
 
 import java.util.Map;
 
@@ -22,8 +23,8 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 public class ElaraScriptFuncTypeTest {
 
-    private static ElaraScript.Value v(Map<String, ElaraScript.Value> env, String name) {
-        ElaraScript.Value out = env.get(name);
+    private static Value v(Map<String, Value> env, String name) {
+        Value out = env.get(name);
         assertNotNull(out, "Missing env var: " + name);
         return out;
     }
@@ -36,10 +37,10 @@ public class ElaraScriptFuncTypeTest {
                 "function my_function(a) { return a; }\n" +
                 "let x = my_function;\n";
 
-        Map<String, ElaraScript.Value> env = es.run(src);
-        ElaraScript.Value x = v(env, "x");
+        Map<String, Value> env = es.run(src);
+        Value x = v(env, "x");
 
-        assertEquals(ElaraScript.Value.Type.FUNC, x.getType());
+        assertEquals(Value.Type.FUNC, x.getType());
         assertEquals("my_function", x.asString());
     }
 
@@ -62,10 +63,10 @@ public class ElaraScriptFuncTypeTest {
                 "let my_function = \"hello\";\n" +
                 "let x = my_function;\n";
 
-        Map<String, ElaraScript.Value> env = es.run(src);
-        ElaraScript.Value x = v(env, "x");
+        Map<String, Value> env = es.run(src);
+        Value x = v(env, "x");
 
-        assertEquals(ElaraScript.Value.Type.STRING, x.getType());
+        assertEquals(Value.Type.STRING, x.getType());
         assertEquals("hello", x.asString());
     }
 
@@ -78,8 +79,8 @@ public class ElaraScriptFuncTypeTest {
                 "let f = foo;\n" +
                 "let t = typeof(f);\n";
 
-        Map<String, ElaraScript.Value> env = es.run(src);
-        ElaraScript.Value t = v(env, "t");
+        Map<String, Value> env = es.run(src);
+        Value t = v(env, "t");
 
         assertEquals("function", t.asString());
     }
@@ -114,7 +115,7 @@ public class ElaraScriptFuncTypeTest {
                 "let eq_ab = (a == b);\n" +
                 "let eq_ac = (a == c);\n";
 
-        Map<String, ElaraScript.Value> env = es.run(src);
+        Map<String, Value> env = es.run(src);
 
         assertFalse(v(env, "eq_ab").asBool());
         assertTrue(v(env, "eq_ac").asBool());
@@ -131,7 +132,7 @@ public class ElaraScriptFuncTypeTest {
             // args: kind, nameOrNull, functionOrNull, lineOrNull, message
             lastMsg.setLength(0);
             lastMsg.append(args.get(4).asString());
-            return ElaraScript.Value.nil();
+            return Value.nil();
         });
 
         // If your environment later enables callback suppression, this will be used.
@@ -145,7 +146,7 @@ public class ElaraScriptFuncTypeTest {
 
         boolean threw = false;
         try {
-            Map<String, ElaraScript.Value> env = es.run(src);
+            Map<String, Value> env = es.run(src);
 
             // Suppressed mode: must NOT define 's'
             assertFalse(env.containsKey("s"), "s should not be defined when '+' fails");

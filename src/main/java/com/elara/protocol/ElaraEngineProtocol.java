@@ -6,6 +6,8 @@ import com.elara.protocol.util.JsonDeepCopy;
 
 import com.elara.script.ElaraScript;
 import com.elara.script.ElaraStateStore;
+import com.elara.script.parser.EntryRunResult;
+import com.elara.script.parser.Value;
 
 import java.security.SecureRandom;
 import java.util.ArrayDeque;
@@ -131,10 +133,10 @@ public final class ElaraEngineProtocol {
         // ---------------------------
         // Build env for the script
         // ---------------------------
-        Map<String, ElaraScript.Value> initialEnv = new LinkedHashMap<String, ElaraScript.Value>();
+        Map<String, Value> initialEnv = new LinkedHashMap<String, Value>();
 
         // Always expose globals as a map
-        initialEnv.put("__global_state", ElaraScript.Value.map(coerceMapToValueMap(beforeGlobals)));
+        initialEnv.put("__global_state", Value.map(coerceMapToValueMap(beforeGlobals)));
 
         // Also expose each key as a top-level var (optional but handy)
         for (Map.Entry<String, Object> e : beforeGlobals.entrySet()) {
@@ -142,36 +144,36 @@ public final class ElaraEngineProtocol {
         }
 
         // Always inject fresh commands per-run (no persistence)
-        initialEnv.put("__commands", ElaraScript.Value.array(new ArrayList<ElaraScript.Value>()));
+        initialEnv.put("__commands", Value.array(new ArrayList<Value>()));
 
         // Inject latest event into env
         Object value = event.get("value");
 
-        initialEnv.put("__event_type", ElaraScript.Value.string(typeStr));
-        initialEnv.put("__event_target", ElaraScript.Value.string(targetStr));
+        initialEnv.put("__event_type", Value.string(typeStr));
+        initialEnv.put("__event_target", Value.string(targetStr));
         initialEnv.put("__event_value", coerceAnyToValue(value));
 
-        List<ElaraScript.Value> tuple = new ArrayList<ElaraScript.Value>(3);
+        List<Value> tuple = new ArrayList<Value>(3);
         tuple.add(initialEnv.get("__event_type"));
         tuple.add(initialEnv.get("__event_target"));
         tuple.add(initialEnv.get("__event_value"));
-        initialEnv.put("__event", ElaraScript.Value.array(tuple));
+        initialEnv.put("__event", Value.array(tuple));
 
         // Run engine
         ElaraScript engine = new ElaraScript();
         builtins.register(engine);
 
-        ElaraScript.Value ev = initialEnv.get("__event");
-        if (ev == null || ev.getType() != ElaraScript.Value.Type.ARRAY) {
+        Value ev = initialEnv.get("__event");
+        if (ev == null || ev.getType() != Value.Type.ARRAY) {
             throw new RuntimeException("__event missing or not ARRAY");
         }
-        List<ElaraScript.Value> evA = ev.asArray();
+        List<Value> evA = ev.asArray();
         if (evA.size() != 3) {
             throw new RuntimeException("__event must be [type, target, payload]");
         }
 
-        List<ElaraScript.Value> args = Arrays.asList(evA.get(0), evA.get(1), evA.get(2));
-        ElaraScript.Value payload = evA.get(2);
+        List<Value> args = Arrays.asList(evA.get(0), evA.get(1), evA.get(2));
+        Value payload = evA.get(2);
 
         // cache includes on system.ready (payload may be MAP or legacy PAIRS array)
         if (isSystemReady) {
@@ -191,7 +193,7 @@ public final class ElaraEngineProtocol {
         String fallback = "event_router";
         String entry = engine.hasUserFunction(processed, candidate) ? candidate : fallback;
 
-        ElaraScript.EntryRunResult rr = engine.runWithEntryResult(processed, entry, args, initialEnv);
+        EntryRunResult rr = engine.runWithEntryResult(processed, entry, args, initialEnv);
 
         // Capture env
         ElaraStateStore outStore = new ElaraStateStore().captureEnv(rr.env());
@@ -254,34 +256,34 @@ public final class ElaraEngineProtocol {
 
     // -------------------------- Includes cache --------------------------
 
-    private static ElaraScript.Value pairsGet(ElaraScript.Value pairs, String key) {
-        if (pairs == null || pairs.getType() != ElaraScript.Value.Type.ARRAY) return null;
-        for (ElaraScript.Value kv : pairs.asArray()) {
-            List<ElaraScript.Value> p = kv.asArray();
+    private static Value pairsGet(Value pairs, String key) {
+        if (pairs == null || pairs.getType() != Value.Type.ARRAY) return null;
+        for (Value kv : pairs.asArray()) {
+            List<Value> p = kv.asArray();
             if (p.size() == 2 && key.equals(p.get(0).asString())) return p.get(1);
         }
         return null;
     }
 
-    private void cacheScriptsFromPayload(Session session, ElaraScript.Value payload) {
+    private void cacheScriptsFromPayload(Session session, Value payload) {
         if (payload == null || session == null) return;
 
-        ElaraScript.Value scriptsV = null;
+        Value scriptsV = null;
 
-        if (payload.getType() == ElaraScript.Value.Type.MAP) {
-            Map<String, ElaraScript.Value> m = payload.asMap();
+        if (payload.getType() == Value.Type.MAP) {
+            Map<String, Value> m = payload.asMap();
             scriptsV = (m == null) ? null : m.get("scripts");
-        } else if (payload.getType() == ElaraScript.Value.Type.ARRAY) {
+        } else if (payload.getType() == Value.Type.ARRAY) {
             scriptsV = pairsGet(payload, "scripts");
         }
 
-        if (scriptsV == null || scriptsV.getType() != ElaraScript.Value.Type.ARRAY) {
+        if (scriptsV == null || scriptsV.getType() != Value.Type.ARRAY) {
             if (log != null) log.w("ElaraProtocol", "No scripts to load from payload");
             return;
         }
 
-        for (ElaraScript.Value kv : scriptsV.asArray()) {
-            List<ElaraScript.Value> p = kv.asArray();
+        for (Value kv : scriptsV.asArray()) {
+            List<Value> p = kv.asArray();
             if (p.size() < 2) continue;
             String path = p.get(0).asString();
             String src  = p.get(1).asString();
@@ -339,8 +341,8 @@ public final class ElaraEngineProtocol {
         return (List<Object>) v;
     }
 
-    private static Map<String, ElaraScript.Value> coerceMapToValueMap(Map<String, Object> m) {
-        Map<String, ElaraScript.Value> out = new LinkedHashMap<String, ElaraScript.Value>();
+    private static Map<String, Value> coerceMapToValueMap(Map<String, Object> m) {
+        Map<String, Value> out = new LinkedHashMap<String, Value>();
         if (m == null) return out;
         for (Map.Entry<String, Object> e : m.entrySet()) {
             out.put(e.getKey(), coerceAnyToValue(e.getValue()));
@@ -390,11 +392,11 @@ public final class ElaraEngineProtocol {
      * Supported: null, boolean, number, string, List (array), numeric List<List> (matrix), Map (map)
      */
     @SuppressWarnings("unchecked")
-    private static ElaraScript.Value coerceAnyToValue(Object v) {
-        if (v == null) return ElaraScript.Value.nil();
-        if (v instanceof Boolean) return ElaraScript.Value.bool(((Boolean) v).booleanValue());
-        if (v instanceof Number) return ElaraScript.Value.number(((Number) v).doubleValue());
-        if (v instanceof String) return ElaraScript.Value.string((String) v);
+    private static Value coerceAnyToValue(Object v) {
+        if (v == null) return Value.nil();
+        if (v instanceof Boolean) return Value.bool(((Boolean) v).booleanValue());
+        if (v instanceof Number) return Value.number(((Number) v).doubleValue());
+        if (v instanceof String) return Value.string((String) v);
 
         if (v instanceof List) {
             List<?> src = (List<?>) v;
@@ -418,31 +420,31 @@ public final class ElaraEngineProtocol {
                 }
 
                 if (allRows && numericMatrix) {
-                    List<List<ElaraScript.Value>> rows = new ArrayList<List<ElaraScript.Value>>();
+                    List<List<Value>> rows = new ArrayList<List<Value>>();
                     for (Object row : src) {
                         List<?> r = (List<?>) row;
-                        List<ElaraScript.Value> rv = new ArrayList<ElaraScript.Value>(r.size());
+                        List<Value> rv = new ArrayList<Value>(r.size());
                         for (Object item : r) rv.add(coerceAnyToValue(item));
                         rows.add(rv);
                     }
-                    return ElaraScript.Value.matrix(rows);
+                    return Value.matrix(rows);
                 }
             }
 
-            List<ElaraScript.Value> out = new ArrayList<ElaraScript.Value>(src.size());
+            List<Value> out = new ArrayList<Value>(src.size());
             for (Object item : src) out.add(coerceAnyToValue(item));
-            return ElaraScript.Value.array(out);
+            return Value.array(out);
         }
 
         if (v instanceof Map) {
             Map<?, ?> m = (Map<?, ?>) v;
-            LinkedHashMap<String, ElaraScript.Value> out = new LinkedHashMap<String, ElaraScript.Value>();
+            LinkedHashMap<String, Value> out = new LinkedHashMap<String, Value>();
             for (Map.Entry<?, ?> e : m.entrySet()) {
                 Object k = e.getKey();
                 if (!(k instanceof String)) throw new RuntimeException("Map keys must be strings");
                 out.put((String) k, coerceAnyToValue(e.getValue()));
             }
-            return ElaraScript.Value.map(out);
+            return Value.map(out);
         }
 
         throw new RuntimeException("Unsupported value type: " + v.getClass().getName());

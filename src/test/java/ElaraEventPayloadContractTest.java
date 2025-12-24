@@ -1,9 +1,10 @@
 import com.elara.script.ElaraScript;
+import com.elara.script.parser.Value;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
-import static com.elara.script.ElaraScript.Value;
 import static org.junit.jupiter.api.Assertions.*;
 
 public class ElaraEventPayloadContractTest {

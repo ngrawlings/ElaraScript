@@ -1,13 +1,12 @@
 package com.elara.script.plugins;
 
 import com.elara.script.ElaraScript;
+import com.elara.script.parser.Value;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Locale;
-
-import static com.elara.script.ElaraScript.Value;
 
 public final class ByteHashPlugin {
 

@@ -1,6 +1,7 @@
 package com.elara.protocol.util;
 
 import com.elara.script.ElaraScript;
+import com.elara.script.parser.Value;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -16,7 +17,7 @@ public final class StateFingerprint {
         return fingerprintRawState(state, null);
     }
 
-    public static String fingerprintEnv(Map<String, ElaraScript.Value> env) {
+    public static String fingerprintEnv(Map<String, Value> env) {
         return fingerprintEnv(env, null);
     }
 
@@ -33,7 +34,7 @@ public final class StateFingerprint {
         }
     }
 
-    public static String fingerprintEnv(Map<String, ElaraScript.Value> env, FingerprintTrace trace) {
+    public static String fingerprintEnv(Map<String, Value> env, FingerprintTrace trace) {
         if (env == null) env = Collections.emptyMap();
         try {
             MessageDigest md = MessageDigest.getInstance("MD5");
@@ -127,7 +128,7 @@ public final class StateFingerprint {
 
     // ---------------- normalized traversal (ENV) ----------------
 
-    private static void feedMapEnv(MessageDigest md, Map<String, ElaraScript.Value> map, FingerprintTrace trace) {
+    private static void feedMapEnv(MessageDigest md, Map<String, Value> map, FingerprintTrace trace) {
         put(md, trace, "{");
 
         List<String> keys = new ArrayList<>(map.keySet());
@@ -144,7 +145,7 @@ public final class StateFingerprint {
         put(md, trace, "}");
     }
 
-    private static void feedValueEnv(MessageDigest md, ElaraScript.Value v, FingerprintTrace trace) {
+    private static void feedValueEnv(MessageDigest md, Value v, FingerprintTrace trace) {
         if (v == null) { put(md, trace, "N"); return; }
 
         switch (v.getType()) {
@@ -158,7 +159,7 @@ public final class StateFingerprint {
         }
     }
 
-    private static void feedEnvList(MessageDigest md, List<ElaraScript.Value> list, FingerprintTrace trace) {
+    private static void feedEnvList(MessageDigest md, List<Value> list, FingerprintTrace trace) {
         put(md, trace, "[");
 
         for (int i = 0; i < list.size(); i++) {
@@ -172,7 +173,7 @@ public final class StateFingerprint {
         put(md, trace, "]");
     }
 
-    private static void feedEnvMatrix(MessageDigest md, List<List<ElaraScript.Value>> rows, FingerprintTrace trace) {
+    private static void feedEnvMatrix(MessageDigest md, List<List<Value>> rows, FingerprintTrace trace) {
         put(md, trace, "[");
 
         for (int r = 0; r < rows.size(); r++) {

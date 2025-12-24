@@ -8,6 +8,8 @@
 // - ElaraScript.run(String) returns the final env snapshot (Map<String, ElaraScript.Value>).
 
 import com.elara.script.ElaraScript;
+import com.elara.script.parser.Value;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
@@ -16,7 +18,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 public class ElaraScriptFreeTest {
 
-    private static boolean hasStateKey(Map<String, ElaraScript.Value> env, String className) {
+    private static boolean hasStateKey(Map<String, Value> env, String className) {
         String prefix = className + ".";
         for (String k : env.keySet()) {
             if (k.startsWith(prefix)) return true;
@@ -41,10 +43,10 @@ public class ElaraScriptFreeTest {
                 "let x = new Foo();\n" +
                 "free x;\n";
 
-        Map<String, ElaraScript.Value> env = es.run(src);
+        Map<String, Value> env = es.run(src);
 
         // on_free side-effect happened
-        assertEquals(ElaraScript.Value.Type.NUMBER, env.get("freed").getType());
+        assertEquals(Value.Type.NUMBER, env.get("freed").getType());
         assertEquals(1.0, env.get("freed").asNumber(), 0.0);
 
         // instance state removed
@@ -62,7 +64,7 @@ public class ElaraScriptFreeTest {
                 "let b = new Bar();\n" +
                 "free b;\n";
 
-        Map<String, ElaraScript.Value> env = es.run(src);
+        Map<String, Value> env = es.run(src);
 
         // no on_free, but state must still be removed
         assertFalse(hasStateKey(env, "Bar"), "Expected Bar.<uuid> state key to be removed after free");

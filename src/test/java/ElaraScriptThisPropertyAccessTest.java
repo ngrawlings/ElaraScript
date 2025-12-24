@@ -1,5 +1,6 @@
 import com.elara.script.ElaraScript;
-import com.elara.script.ElaraScript.Value;
+import com.elara.script.parser.Value;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.Collections;

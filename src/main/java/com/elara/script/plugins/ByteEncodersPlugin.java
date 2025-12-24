@@ -3,8 +3,8 @@ package com.elara.script.plugins;
 import java.util.Base64;
 
 import com.elara.script.ElaraScript;
+import com.elara.script.parser.Value;
 
-import static com.elara.script.ElaraScript.Value;
 
 public final class ByteEncodersPlugin {
 

@@ -1,6 +1,7 @@
 import org.junit.jupiter.api.Test;
 
 import com.elara.script.ElaraScript;
+import com.elara.script.parser.Value;
 
 import java.lang.reflect.Field;
 import java.util.*;
@@ -21,7 +22,7 @@ public class ElaraScriptClassBodyParseTest {
                 "}\n" +
                 "let ok = true;\n";
 
-        Map<String, ElaraScript.Value> env = assertDoesNotThrow(() ->
+        Map<String, Value> env = assertDoesNotThrow(() ->
                 es.run(src, new HashMap<>())
         );
 
@@ -31,9 +32,9 @@ public class ElaraScriptClassBodyParseTest {
         // Since classes are now stored in env:
         assertTrue(env.containsKey("MyClass"), "MyClass descriptor should be stored in env");
 
-        ElaraScript.Value clsVal = env.get("MyClass");
+        Value clsVal = env.get("MyClass");
         assertNotNull(clsVal, "MyClass value must not be null");
-        assertEquals(ElaraScript.Value.Type.CLASS, clsVal.getType(), "MyClass must be CLASS type");
+        assertEquals(Value.Type.CLASS, clsVal.getType(), "MyClass must be CLASS type");
 
         Object desc = extractPayloadObject(clsVal);
         assertNotNull(desc, "CLASS descriptor payload must not be null");
@@ -71,11 +72,11 @@ public class ElaraScriptClassBodyParseTest {
      * Extract internal payload from Value without depending on a specific accessor name.
      * Add more field candidates if your Value uses another name.
      */
-    private static Object extractPayloadObject(ElaraScript.Value v) {
+    private static Object extractPayloadObject(Value v) {
         String[] candidates = {"value", "raw", "data"};
         for (String fName : candidates) {
             try {
-                Field f = ElaraScript.Value.class.getDeclaredField(fName);
+                Field f = Value.class.getDeclaredField(fName);
                 f.setAccessible(true);
                 return f.get(v);
             } catch (NoSuchFieldException ignored) {
@@ -83,7 +84,7 @@ public class ElaraScriptClassBodyParseTest {
                 throw new RuntimeException("Unable to access Value payload field: " + fName, e);
             }
         }
-        fail("Could not find payload field on ElaraScript.Value. Tried: " + Arrays.toString(candidates));
+        fail("Could not find payload field on Value. Tried: " + Arrays.toString(candidates));
         return null; // unreachable
     }
 }

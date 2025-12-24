@@ -3,7 +3,7 @@ package com.elara.script.rpc;
 import com.elara.debug.Debug;
 import com.elara.protocol.ElaraEngineProtocol;
 import com.elara.script.ElaraScript;
-
+import com.elara.script.parser.Value;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -218,19 +218,19 @@ public final class ElaraRpcServer implements Closeable {
             String tag = args.get(0).asString();
             String msg = args.get(1).asString();
             System.out.println("[" + tag + "] " + msg);
-            return ElaraScript.Value.nil();
+            return Value.nil();
         });
 
         // nowMillis() -> number
         engine.registerFunction("nowMillis", args -> {
             if (args.size() != 0) throw new RuntimeException("nowMillis expects 0 args");
-            return ElaraScript.Value.number((double) System.currentTimeMillis());
+            return Value.number((double) System.currentTimeMillis());
         });
 
         // uuid() -> string
         engine.registerFunction("uuid", args -> {
             if (args.size() != 0) throw new RuntimeException("uuid expects 0 args");
-            return ElaraScript.Value.string(java.util.UUID.randomUUID().toString());
+            return Value.string(java.util.UUID.randomUUID().toString());
         });
 
         // randInt(minInclusive, maxInclusive) -> number
@@ -241,14 +241,14 @@ public final class ElaraRpcServer implements Closeable {
             int lo = Math.min(a, b);
             int hi = Math.max(a, b);
             int r = java.util.concurrent.ThreadLocalRandom.current().nextInt(lo, hi + 1);
-            return ElaraScript.Value.number((double) r);
+            return Value.number((double) r);
         });
 
         // setview(parentId, viewName) -> string (placeholder, host-agnostic)
         engine.registerFunction("setview", args -> {
             if (args.size() != 2) throw new RuntimeException("setview expects 2 args");
             String view = args.get(1).asString();
-            return ElaraScript.Value.string(view);
+            return Value.string(view);
         });
 
         // toast(...) is Android-only; fail fast to keep scripts honest

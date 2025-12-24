@@ -5,6 +5,7 @@ import java.util.Collections;
 import java.util.List;
 
 import com.elara.script.ElaraScript;
+import com.elara.script.parser.Value;
 
 /**
  * ElaraMatrixPlugin
@@ -37,9 +38,9 @@ public final class ElaraMatrixPlugin {
         engine.registerFunction("mat_shape", args -> {
             requireArgs("mat_shape", args, 1);
             Matrix m = requireMatrix(args.get(0), "mat_shape", 0);
-            return ElaraScript.Value.array(List.of(
-                    ElaraScript.Value.number(m.rows),
-                    ElaraScript.Value.number(m.cols)
+            return Value.array(List.of(
+                    Value.number(m.rows),
+                    Value.number(m.cols)
             ));
         });
 
@@ -88,14 +89,14 @@ public final class ElaraMatrixPlugin {
             requireArgs("mat_vec_mul", args, 2);
             Matrix m = requireMatrix(args.get(0), "mat_vec_mul", 0);
             Vector v = requireVector(args.get(1), "mat_vec_mul", 1);
-            return ElaraScript.Value.array(m.mulVec(v).values);
+            return Value.array(m.mulVec(v).values);
         });
 
         engine.registerFunction("mat_dot", args -> {
             requireArgs("mat_dot", args, 2);
             Vector a = requireVector(args.get(0), "mat_dot", 0);
             Vector b = requireVector(args.get(1), "mat_dot", 1);
-            return ElaraScript.Value.number(dot(a, b));
+            return Value.number(dot(a, b));
         });
     }
 
@@ -205,7 +206,7 @@ public final class ElaraMatrixPlugin {
             if (this.cols != v.n) {
                 throw new RuntimeException("mat_vec_mul: shape mismatch (" + rows + "x" + cols + ") * (" + v.n + ")");
             }
-            List<ElaraScript.Value> out = new ArrayList<>(Collections.nCopies(this.rows, ElaraScript.Value.nil()));
+            List<Value> out = new ArrayList<>(Collections.nCopies(this.rows, Value.nil()));
             for (int r = 0; r < this.rows; r++) {
                 double acc = 0.0;
                 boolean anyNull = false;
@@ -215,7 +216,7 @@ public final class ElaraMatrixPlugin {
                     if (x == null || y == null) { anyNull = true; break; }
                     acc += x * y;
                 }
-                if (!anyNull) out.set(r, ElaraScript.Value.number(acc));
+                if (!anyNull) out.set(r, Value.number(acc));
             }
             return new Vector(out);
         }
@@ -225,9 +226,9 @@ public final class ElaraMatrixPlugin {
     private static final class Vector {
         final int n;
         final Double[] data;
-        final List<ElaraScript.Value> values; // original-ish for easy return
+        final List<Value> values; // original-ish for easy return
 
-        Vector(List<ElaraScript.Value> values) {
+        Vector(List<Value> values) {
             this.n = values.size();
             this.data = new Double[n];
             this.values = values;
@@ -251,44 +252,44 @@ public final class ElaraMatrixPlugin {
 
     // ===================== CONVERSION =====================
 
-    private static ElaraScript.Value toValue(Matrix m) {
-        List<ElaraScript.Value> rows = new ArrayList<>(m.rows);
+    private static Value toValue(Matrix m) {
+        List<Value> rows = new ArrayList<>(m.rows);
         for (int r = 0; r < m.rows; r++) {
-            List<ElaraScript.Value> row = new ArrayList<>(m.cols);
+            List<Value> row = new ArrayList<>(m.cols);
             for (int c = 0; c < m.cols; c++) {
                 Double x = m.data[r][c];
-                row.add(x == null ? ElaraScript.Value.nil() : ElaraScript.Value.number(x));
+                row.add(x == null ? Value.nil() : Value.number(x));
             }
-            rows.add(ElaraScript.Value.array(row));
+            rows.add(Value.array(row));
         }
-        return ElaraScript.Value.array(rows);
+        return Value.array(rows);
     }
 
     // ===================== ARG VALIDATION =====================
 
-    private static void requireArgs(String fn, List<ElaraScript.Value> args, int n) {
+    private static void requireArgs(String fn, List<Value> args, int n) {
         if (args.size() != n) {
             throw new RuntimeException(fn + "() expects " + n + " arguments, got " + args.size());
         }
     }
 
-    private static double requireNumber(ElaraScript.Value v, String fn, int idx) {
-        if (v.getType() != ElaraScript.Value.Type.NUMBER) {
+    private static double requireNumber(Value v, String fn, int idx) {
+        if (v.getType() != Value.Type.NUMBER) {
             throw new RuntimeException(fn + " arg[" + idx + "] must be a number");
         }
         return v.asNumber();
     }
 
-    private static Matrix requireMatrix(ElaraScript.Value v, String fn, int idx) {
-        if (v.getType() != ElaraScript.Value.Type.ARRAY) {
+    private static Matrix requireMatrix(Value v, String fn, int idx) {
+        if (v.getType() != Value.Type.ARRAY) {
             throw new RuntimeException(fn + " arg[" + idx + "] must be a matrix (array of arrays)");
         }
-        List<ElaraScript.Value> rows = v.asArray();
+        List<Value> rows = v.asArray();
         int rCount = rows.size();
         if (rCount == 0) return new Matrix(0, 0);
 
         // validate first row
-        if (rows.get(0).getType() != ElaraScript.Value.Type.ARRAY) {
+        if (rows.get(0).getType() != Value.Type.ARRAY) {
             throw new RuntimeException(fn + " arg[" + idx + "] must be a matrix (array of arrays)");
         }
         int cCount = rows.get(0).asArray().size();
@@ -296,19 +297,19 @@ public final class ElaraMatrixPlugin {
         Double[][] data = new Double[rCount][cCount];
 
         for (int r = 0; r < rCount; r++) {
-            ElaraScript.Value rowV = rows.get(r);
-            if (rowV.getType() != ElaraScript.Value.Type.ARRAY) {
+            Value rowV = rows.get(r);
+            if (rowV.getType() != Value.Type.ARRAY) {
                 throw new RuntimeException(fn + " arg[" + idx + "] row[" + r + "] is not an array");
             }
-            List<ElaraScript.Value> row = rowV.asArray();
+            List<Value> row = rowV.asArray();
             if (row.size() != cCount) {
                 throw new RuntimeException(fn + " arg[" + idx + "] is ragged (row " + r + " has " + row.size() + ", expected " + cCount + ")");
             }
             for (int c = 0; c < cCount; c++) {
-                ElaraScript.Value cell = row.get(c);
-                if (cell.getType() == ElaraScript.Value.Type.NULL) {
+                Value cell = row.get(c);
+                if (cell.getType() == Value.Type.NULL) {
                     data[r][c] = null;
-                } else if (cell.getType() == ElaraScript.Value.Type.NUMBER) {
+                } else if (cell.getType() == Value.Type.NUMBER) {
                     data[r][c] = cell.asNumber();
                 } else {
                     throw new RuntimeException(fn + " arg[" + idx + "] cell[" + r + "][" + c + "] must be number or null");
@@ -319,15 +320,15 @@ public final class ElaraMatrixPlugin {
         return new Matrix(data);
     }
 
-    private static Vector requireVector(ElaraScript.Value v, String fn, int idx) {
-        if (v.getType() != ElaraScript.Value.Type.ARRAY) {
+    private static Vector requireVector(Value v, String fn, int idx) {
+        if (v.getType() != Value.Type.ARRAY) {
             throw new RuntimeException(fn + " arg[" + idx + "] must be an array");
         }
-        List<ElaraScript.Value> a = v.asArray();
+        List<Value> a = v.asArray();
         for (int i = 0; i < a.size(); i++) {
-            ElaraScript.Value item = a.get(i);
-            if (item.getType() == ElaraScript.Value.Type.NULL) continue;
-            if (item.getType() != ElaraScript.Value.Type.NUMBER) {
+            Value item = a.get(i);
+            if (item.getType() == Value.Type.NULL) continue;
+            if (item.getType() != Value.Type.NUMBER) {
                 throw new RuntimeException(fn + " arg[" + idx + "] element[" + i + "] must be number or null");
             }
         }
@@ -340,10 +341,10 @@ public final class ElaraMatrixPlugin {
         }
     }
 
-    private static Double asDoubleOrNull(ElaraScript.Value v) {
+    private static Double asDoubleOrNull(Value v) {
         if (v == null) return null;
-        if (v.getType() == ElaraScript.Value.Type.NULL) return null;
-        if (v.getType() != ElaraScript.Value.Type.NUMBER) return null;
+        if (v.getType() == Value.Type.NULL) return null;
+        if (v.getType() != Value.Type.NUMBER) return null;
         return v.asNumber();
     }
 }

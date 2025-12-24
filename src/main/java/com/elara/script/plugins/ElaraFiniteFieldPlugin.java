@@ -3,6 +3,7 @@ package com.elara.script.plugins;
 import java.util.List;
 
 import com.elara.script.ElaraScript;
+import com.elara.script.parser.Value;
 
 /**
  * ElaraFiniteFieldPlugin
@@ -38,14 +39,14 @@ public final class ElaraFiniteFieldPlugin {
             requireArgs("mod", args, 2);
             long a = requireInt64(args.get(0), "mod", 0);
             long n = requirePosInt64(args.get(1), "mod", 1);
-            return ElaraScript.Value.number(mod(a, n));
+            return Value.number(mod(a, n));
         });
 
         engine.registerFunction("gcd", args -> {
             requireArgs("gcd", args, 2);
             long a = requireInt64(args.get(0), "gcd", 0);
             long b = requireInt64(args.get(1), "gcd", 1);
-            return ElaraScript.Value.number(gcd(a, b));
+            return Value.number(gcd(a, b));
         });
 
         engine.registerFunction("egcd", args -> {
@@ -53,10 +54,10 @@ public final class ElaraFiniteFieldPlugin {
             long a = requireInt64(args.get(0), "egcd", 0);
             long b = requireInt64(args.get(1), "egcd", 1);
             EGcd r = egcd(a, b);
-            return ElaraScript.Value.array(List.of(
-                    ElaraScript.Value.number(r.g),
-                    ElaraScript.Value.number(r.x),
-                    ElaraScript.Value.number(r.y)
+            return Value.array(List.of(
+                    Value.number(r.g),
+                    Value.number(r.x),
+                    Value.number(r.y)
             ));
         });
 
@@ -67,9 +68,9 @@ public final class ElaraFiniteFieldPlugin {
             Long inv = invMod(a, n);
             if (inv == null) {
                 // No inverse exists; return null to keep scripts flow-friendly.
-                return ElaraScript.Value.nil();
+                return Value.nil();
             }
-            return ElaraScript.Value.number(inv);
+            return Value.number(inv);
         });
 
         engine.registerFunction("pow_mod", args -> {
@@ -77,7 +78,7 @@ public final class ElaraFiniteFieldPlugin {
             long a = requireInt64(args.get(0), "pow_mod", 0);
             long e = requireNonNegInt64(args.get(1), "pow_mod", 1);
             long n = requirePosInt64(args.get(2), "pow_mod", 2);
-            return ElaraScript.Value.number(powMod(a, e, n));
+            return Value.number(powMod(a, e, n));
         });
 
         engine.registerFunction("add_mod", args -> {
@@ -85,7 +86,7 @@ public final class ElaraFiniteFieldPlugin {
             long a = requireInt64(args.get(0), "add_mod", 0);
             long b = requireInt64(args.get(1), "add_mod", 1);
             long n = requirePosInt64(args.get(2), "add_mod", 2);
-            return ElaraScript.Value.number(mod(a + b, n));
+            return Value.number(mod(a + b, n));
         });
 
         engine.registerFunction("sub_mod", args -> {
@@ -93,7 +94,7 @@ public final class ElaraFiniteFieldPlugin {
             long a = requireInt64(args.get(0), "sub_mod", 0);
             long b = requireInt64(args.get(1), "sub_mod", 1);
             long n = requirePosInt64(args.get(2), "sub_mod", 2);
-            return ElaraScript.Value.number(mod(a - b, n));
+            return Value.number(mod(a - b, n));
         });
 
         engine.registerFunction("mul_mod", args -> {
@@ -101,7 +102,7 @@ public final class ElaraFiniteFieldPlugin {
             long a = requireInt64(args.get(0), "mul_mod", 0);
             long b = requireInt64(args.get(1), "mul_mod", 1);
             long n = requirePosInt64(args.get(2), "mul_mod", 2);
-            return ElaraScript.Value.number(mulMod(a, b, n));
+            return Value.number(mulMod(a, b, n));
         });
     }
 
@@ -217,14 +218,14 @@ public final class ElaraFiniteFieldPlugin {
 
     // ===================== ARG HELPERS =====================
 
-    private static void requireArgs(String fn, List<ElaraScript.Value> args, int n) {
+    private static void requireArgs(String fn, List<Value> args, int n) {
         if (args.size() != n) {
             throw new RuntimeException(fn + "() expects " + n + " arguments, got " + args.size());
         }
     }
 
-    private static long requireInt64(ElaraScript.Value v, String fn, int idx) {
-        if (v.getType() != ElaraScript.Value.Type.NUMBER) {
+    private static long requireInt64(Value v, String fn, int idx) {
+        if (v.getType() != Value.Type.NUMBER) {
             throw new RuntimeException(fn + " arg[" + idx + "] must be a number");
         }
         double d = v.asNumber();
@@ -237,13 +238,13 @@ public final class ElaraFiniteFieldPlugin {
         return (long) d;
     }
 
-    private static long requirePosInt64(ElaraScript.Value v, String fn, int idx) {
+    private static long requirePosInt64(Value v, String fn, int idx) {
         long x = requireInt64(v, fn, idx);
         if (x <= 0) throw new RuntimeException(fn + " arg[" + idx + "] must be > 0");
         return x;
     }
 
-    private static long requireNonNegInt64(ElaraScript.Value v, String fn, int idx) {
+    private static long requireNonNegInt64(Value v, String fn, int idx) {
         long x = requireInt64(v, fn, idx);
         if (x < 0) throw new RuntimeException(fn + " arg[" + idx + "] must be >= 0");
         return x;

@@ -1,6 +1,7 @@
 import org.junit.jupiter.api.Test;
 
 import com.elara.script.ElaraScript;
+import com.elara.script.parser.Value;
 
 import java.lang.reflect.Field;
 import java.util.*;
@@ -21,7 +22,7 @@ public class ElaraScriptNewInstantiationTest {
                 "let a = new MyClass();\n" +
                 "let b = new MyClass();\n";
 
-        Map<String, ElaraScript.Value> env = assertDoesNotThrow(() ->
+        Map<String, Value> env = assertDoesNotThrow(() ->
                 es.run(src, new HashMap<>())
         );
 
@@ -31,14 +32,14 @@ public class ElaraScriptNewInstantiationTest {
         assertTrue(env.containsKey("a"), "a must exist in env snapshot");
         assertTrue(env.containsKey("b"), "b must exist in env snapshot");
 
-        ElaraScript.Value aVal = env.get("a");
-        ElaraScript.Value bVal = env.get("b");
+        Value aVal = env.get("a");
+        Value bVal = env.get("b");
         assertNotNull(aVal, "a must not be null");
         assertNotNull(bVal, "b must not be null");
 
         // 2) a and b must be CLASS_INSTANCE
-        assertEquals(ElaraScript.Value.Type.CLASS_INSTANCE, aVal.getType(), "a must be CLASS_INSTANCE");
-        assertEquals(ElaraScript.Value.Type.CLASS_INSTANCE, bVal.getType(), "b must be CLASS_INSTANCE");
+        assertEquals(Value.Type.CLASS_INSTANCE, aVal.getType(), "a must be CLASS_INSTANCE");
+        assertEquals(Value.Type.CLASS_INSTANCE, bVal.getType(), "b must be CLASS_INSTANCE");
 
         // 3) Extract (className, uuid) payload from both instances
         InstanceRef aRef = extractInstanceRef(aVal);
@@ -60,15 +61,15 @@ public class ElaraScriptNewInstantiationTest {
         assertTrue(env.containsKey(aKey), "env must contain state map for a: " + aKey);
         assertTrue(env.containsKey(bKey), "env must contain state map for b: " + bKey);
 
-        ElaraScript.Value aState = env.get(aKey);
-        ElaraScript.Value bState = env.get(bKey);
+        Value aState = env.get(aKey);
+        Value bState = env.get(bKey);
         assertNotNull(aState, "a state map value must not be null");
         assertNotNull(bState, "b state map value must not be null");
 
         // If your MAP type exists, assert it here:
         // (If your engine uses a different enum name, update accordingly.)
-        assertEquals(ElaraScript.Value.Type.MAP, aState.getType(), "a state must be MAP");
-        assertEquals(ElaraScript.Value.Type.MAP, bState.getType(), "b state must be MAP");
+        assertEquals(Value.Type.MAP, aState.getType(), "a state must be MAP");
+        assertEquals(Value.Type.MAP, bState.getType(), "b state must be MAP");
 
         // 5) Sanity: there should be exactly 2 MyClass.<uuid> state keys
         List<String> stateKeys = env.keySet().stream()
@@ -99,7 +100,7 @@ public class ElaraScriptNewInstantiationTest {
      * - Value holds payload in a field named "value" OR similar.
      * - Payload type is Value.ClassInstance with fields "className" and "uuid".
      */
-    private static InstanceRef extractInstanceRef(ElaraScript.Value v) {
+    private static InstanceRef extractInstanceRef(Value v) {
         Object payload = extractPayloadObject(v);
         assertNotNull(payload, "CLASS_INSTANCE payload must not be null");
 
@@ -128,13 +129,13 @@ public class ElaraScriptNewInstantiationTest {
      * Tries to pull the internal payload object out of Value.
      * Update the field name here if your Value uses something other than "value".
      */
-    private static Object extractPayloadObject(ElaraScript.Value v) {
+    private static Object extractPayloadObject(Value v) {
         // Common patterns: "value", "raw", "data"
         String[] candidates = new String[] {"value", "raw", "data"};
 
         for (String fieldName : candidates) {
             try {
-                Field f = ElaraScript.Value.class.getDeclaredField(fieldName);
+                Field f = Value.class.getDeclaredField(fieldName);
                 f.setAccessible(true);
                 return f.get(v);
             } catch (NoSuchFieldException ignored) {
@@ -144,7 +145,7 @@ public class ElaraScriptNewInstantiationTest {
             }
         }
 
-        fail("Could not find a payload field on ElaraScript.Value. Tried: " + Arrays.toString(candidates));
+        fail("Could not find a payload field on Value. Tried: " + Arrays.toString(candidates));
         return null; // unreachable
     }
 }

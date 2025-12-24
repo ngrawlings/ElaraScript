@@ -1,10 +1,9 @@
 package com.elara.script.plugins;
 
 import com.elara.script.ElaraScript;
+import com.elara.script.parser.Value;
 
 import java.util.List;
-
-import static com.elara.script.ElaraScript.Value;
 
 public final class ByteArraysPlugin {
 

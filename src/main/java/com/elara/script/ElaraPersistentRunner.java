@@ -10,6 +10,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import com.elara.script.parser.Value;
+
 /**
  * Example app that persists ElaraScript environment between processes using ElaraStateStore.
  *
@@ -57,10 +59,10 @@ public final class ElaraPersistentRunner {
 
         // 2) Convert JSON-safe raw state -> Map<String, ElaraScript.Value> initialEnv
         Map<String, Object> rawInputs = store.toRawInputs();
-        Map<String, ElaraScript.Value> initialEnv = toInitialEnv(rawInputs);
+        Map<String, Value> initialEnv = toInitialEnv(rawInputs);
 
         // 3) Run with initial env restored
-        Map<String, ElaraScript.Value> envAfter;
+        Map<String, Value> envAfter;
         try {
             envAfter = engine.run(script, initialEnv);
         } catch (Exception e) {
@@ -103,8 +105,8 @@ public final class ElaraPersistentRunner {
      * NOTE: Your language itself doesn't parse matrix literals, but the engine *does* support MATRIX as a Value type,
      * so we preserve it here (list-of-lists => MATRIX).
      */
-    private static Map<String, ElaraScript.Value> toInitialEnv(Map<String, Object> raw) {
-        LinkedHashMap<String, ElaraScript.Value> out = new LinkedHashMap<>();
+    private static Map<String, Value> toInitialEnv(Map<String, Object> raw) {
+        LinkedHashMap<String, Value> out = new LinkedHashMap<>();
         if (raw == null) return out;
 
         for (Map.Entry<String, Object> e : raw.entrySet()) {
@@ -113,35 +115,35 @@ public final class ElaraPersistentRunner {
         return out;
     }
 
-    private static ElaraScript.Value fromJsonSafe(Object v) {
-        if (v == null) return ElaraScript.Value.nil();
+    private static Value fromJsonSafe(Object v) {
+        if (v == null) return Value.nil();
 
-        if (v instanceof Boolean) return ElaraScript.Value.bool((Boolean) v);
-        if (v instanceof Number)  return ElaraScript.Value.number(((Number) v).doubleValue());
-        if (v instanceof String)  return ElaraScript.Value.string((String) v);
+        if (v instanceof Boolean) return Value.bool((Boolean) v);
+        if (v instanceof Number)  return Value.number(((Number) v).doubleValue());
+        if (v instanceof String)  return Value.string((String) v);
 
         if (v instanceof List) {
             List<?> list = (List<?>) v;
 
             // If it's a list-of-lists, treat as MATRIX
             if (!list.isEmpty() && list.get(0) instanceof List) {
-                List<List<ElaraScript.Value>> rows = new ArrayList<>();
+                List<List<Value>> rows = new ArrayList<>();
                 for (Object rowObj : list) {
                     if (!(rowObj instanceof List)) {
                         throw new IllegalArgumentException("Matrix rows must be lists");
                     }
                     List<?> row = (List<?>) rowObj;
-                    List<ElaraScript.Value> r = new ArrayList<>(row.size());
+                    List<Value> r = new ArrayList<>(row.size());
                     for (Object item : row) r.add(fromJsonSafe(item));
                     rows.add(r);
                 }
-                return ElaraScript.Value.matrix(rows);
+                return Value.matrix(rows);
             }
 
             // Otherwise treat as ARRAY
-            List<ElaraScript.Value> arr = new ArrayList<>(list.size());
+            List<Value> arr = new ArrayList<>(list.size());
             for (Object item : list) arr.add(fromJsonSafe(item));
-            return ElaraScript.Value.array(arr);
+            return Value.array(arr);
         }
 
         // (If you ever allow objects/maps in your language, you'd extend here)

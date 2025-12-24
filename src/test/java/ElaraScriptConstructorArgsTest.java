@@ -1,6 +1,7 @@
 import org.junit.jupiter.api.Test;
 
 import com.elara.script.ElaraScript;
+import com.elara.script.parser.Value;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -25,12 +26,12 @@ public class ElaraScriptConstructorArgsTest {
                 "let a = new MyClass(7, 9);\n";
 
         // If args are not passed correctly, constructor calls fail() and crashes.
-        Map<String, ElaraScript.Value> env = assertDoesNotThrow(() ->
+        Map<String, Value> env = assertDoesNotThrow(() ->
                 es.run(src, new HashMap<>())
         );
 
         assertNotNull(env);
         assertTrue(env.containsKey("a"));
-        assertEquals(ElaraScript.Value.Type.CLASS_INSTANCE, env.get("a").getType());
+        assertEquals(Value.Type.CLASS_INSTANCE, env.get("a").getType());
     }
 }

@@ -1,6 +1,7 @@
 import org.junit.jupiter.api.Test;
 
 import com.elara.script.ElaraScript;
+import com.elara.script.parser.Value;
 
 import java.lang.reflect.Field;
 import java.util.HashMap;
@@ -21,7 +22,7 @@ public class ElaraScriptMethodThisTest {
                 "let a = new MyClass();\n" +
                 "let b = a.self();\n";
 
-        Map<String, ElaraScript.Value> env = assertDoesNotThrow(() ->
+        Map<String, Value> env = assertDoesNotThrow(() ->
                 es.run(src, new HashMap<>())
         );
 
@@ -29,11 +30,11 @@ public class ElaraScriptMethodThisTest {
         assertTrue(env.containsKey("a"));
         assertTrue(env.containsKey("b"));
 
-        ElaraScript.Value aVal = env.get("a");
-        ElaraScript.Value bVal = env.get("b");
+        Value aVal = env.get("a");
+        Value bVal = env.get("b");
 
-        assertEquals(ElaraScript.Value.Type.CLASS_INSTANCE, aVal.getType());
-        assertEquals(ElaraScript.Value.Type.CLASS_INSTANCE, bVal.getType());
+        assertEquals(Value.Type.CLASS_INSTANCE, aVal.getType());
+        assertEquals(Value.Type.CLASS_INSTANCE, bVal.getType());
 
         // Compare instance identity by extracting (className, uuid)
         InstanceRef ar = extractInstanceRef(aVal);
@@ -49,7 +50,7 @@ public class ElaraScriptMethodThisTest {
         InstanceRef(String className, String uuid) { this.className = className; this.uuid = uuid; }
     }
 
-    private static InstanceRef extractInstanceRef(ElaraScript.Value v) {
+    private static InstanceRef extractInstanceRef(Value v) {
         Object payload = extractPayloadObject(v);
         assertNotNull(payload);
 
@@ -64,11 +65,11 @@ public class ElaraScriptMethodThisTest {
         }
     }
 
-    private static Object extractPayloadObject(ElaraScript.Value v) {
+    private static Object extractPayloadObject(Value v) {
         String[] candidates = {"value", "raw", "data"};
         for (String fName : candidates) {
             try {
-                Field f = ElaraScript.Value.class.getDeclaredField(fName);
+                Field f = Value.class.getDeclaredField(fName);
                 f.setAccessible(true);
                 return f.get(v);
             } catch (NoSuchFieldException ignored) {
@@ -93,19 +94,19 @@ public class ElaraScriptMethodThisTest {
                 "let ra = a.self();\n" +
                 "let rb = b.self();\n";
 
-        Map<String, ElaraScript.Value> env = assertDoesNotThrow(() ->
+        Map<String, Value> env = assertDoesNotThrow(() ->
                 es.run(src, new HashMap<>())
         );
 
-        ElaraScript.Value aVal = env.get("a");
-        ElaraScript.Value bVal = env.get("b");
-        ElaraScript.Value raVal = env.get("ra");
-        ElaraScript.Value rbVal = env.get("rb");
+        Value aVal = env.get("a");
+        Value bVal = env.get("b");
+        Value raVal = env.get("ra");
+        Value rbVal = env.get("rb");
 
-        assertEquals(ElaraScript.Value.Type.CLASS_INSTANCE, aVal.getType());
-        assertEquals(ElaraScript.Value.Type.CLASS_INSTANCE, bVal.getType());
-        assertEquals(ElaraScript.Value.Type.CLASS_INSTANCE, raVal.getType());
-        assertEquals(ElaraScript.Value.Type.CLASS_INSTANCE, rbVal.getType());
+        assertEquals(Value.Type.CLASS_INSTANCE, aVal.getType());
+        assertEquals(Value.Type.CLASS_INSTANCE, bVal.getType());
+        assertEquals(Value.Type.CLASS_INSTANCE, raVal.getType());
+        assertEquals(Value.Type.CLASS_INSTANCE, rbVal.getType());
 
         InstanceRef a = extractInstanceRef(aVal);
         InstanceRef b = extractInstanceRef(bVal);
@@ -146,15 +147,15 @@ public class ElaraScriptMethodThisTest {
                 "let a = new MyClass();\n" +
                 "let v = a.pick(123);\n";
 
-        Map<String, ElaraScript.Value> env = assertDoesNotThrow(() ->
+        Map<String, Value> env = assertDoesNotThrow(() ->
                 es.run(src, new HashMap<>())
         );
 
         assertTrue(env.containsKey("v"));
-        ElaraScript.Value vVal = env.get("v");
+        Value vVal = env.get("v");
 
         // adjust if your numbers are doubles; this is a safe check:
-        assertEquals(ElaraScript.Value.Type.NUMBER, vVal.getType());
+        assertEquals(Value.Type.NUMBER, vVal.getType());
         assertEquals(123.0, vVal.asNumber(), 0.0);
     }
     

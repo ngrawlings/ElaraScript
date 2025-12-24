@@ -1,6 +1,7 @@
 package com.elara.script.plugins;
 
 import com.elara.script.ElaraScript;
+import com.elara.script.parser.Value;
 
 import java.util.*;
 import java.util.regex.Pattern;
@@ -49,7 +50,7 @@ public final class SvLitePlugin {
         // sv_cmds() -> []
         engine.registerFunction("sv_cmds", args -> {
             if (!args.isEmpty()) throw new RuntimeException("sv_cmds() expects 0 args");
-            return ElaraScript.Value.array(new ArrayList<>());
+            return Value.array(new ArrayList<>());
         });
 
         /**
@@ -58,9 +59,9 @@ public final class SvLitePlugin {
          */
         engine.registerFunction("sv_emit", args -> {
             if (args.size() != 3) throw new RuntimeException("sv_emit(cmds, op, payload) expects 3 args");
-            ElaraScript.Value cmds = args.get(0);
-            ElaraScript.Value op   = args.get(1);
-            ElaraScript.Value pay  = args.get(2);
+            Value cmds = args.get(0);
+            Value op   = args.get(1);
+            Value pay  = args.get(2);
 
             requireArray("sv_emit", cmds);
             requireString("sv_emit", op);
@@ -73,9 +74,9 @@ public final class SvLitePlugin {
         // sv_create(cmds, "vector.instance", payloadMap) -> cmds
         engine.registerFunction("sv_create", args -> {
             if (args.size() != 3) throw new RuntimeException("sv_create(cmds, id, payload) expects 3 args");
-            ElaraScript.Value cmds = args.get(0);
-            ElaraScript.Value idV  = args.get(1);
-            ElaraScript.Value payV = args.get(2);
+            Value cmds = args.get(0);
+            Value idV  = args.get(1);
+            Value payV = args.get(2);
 
             requireArray("sv_create", cmds);
             requireString("sv_create", idV);
@@ -88,105 +89,105 @@ public final class SvLitePlugin {
             final String vectorName = parts[0];
             final String instanceName = parts[1];
 
-            Map<String, ElaraScript.Value> payload = new LinkedHashMap<>(payV.asMap());
+            Map<String, Value> payload = new LinkedHashMap<>(payV.asMap());
 
-            payload.put("id", ElaraScript.Value.string(id));
-            payload.put("vector", ElaraScript.Value.string(vectorName));
-            payload.put("instance", ElaraScript.Value.string(instanceName));
+            payload.put("id", Value.string(id));
+            payload.put("vector", Value.string(vectorName));
+            payload.put("instance", Value.string(instanceName));
 
             CanvasMeta meta = extractAndNormalizeCanvasMeta(payload);
-            payload.put("x",  ElaraScript.Value.number(meta.x));
-            payload.put("y",  ElaraScript.Value.number(meta.y));
-            payload.put("z",  ElaraScript.Value.number(meta.z));
-            payload.put("sx", ElaraScript.Value.number(meta.sx));
-            payload.put("sy", ElaraScript.Value.number(meta.sy));
-            payload.put("r",  ElaraScript.Value.number(meta.r));
-            payload.put("a",  ElaraScript.Value.number(meta.a));
+            payload.put("x",  Value.number(meta.x));
+            payload.put("y",  Value.number(meta.y));
+            payload.put("z",  Value.number(meta.z));
+            payload.put("sx", Value.number(meta.sx));
+            payload.put("sy", Value.number(meta.sy));
+            payload.put("r",  Value.number(meta.r));
+            payload.put("a",  Value.number(meta.a));
 
-            append(cmds.asArray(), "create", ElaraScript.Value.map(payload));
+            append(cmds.asArray(), "create", Value.map(payload));
             return cmds;
         });
 
         // sv_remove(cmds, id) -> cmds
         engine.registerFunction("sv_remove", args -> {
             if (args.size() != 2) throw new RuntimeException("sv_remove(cmds, id) expects 2 args");
-            ElaraScript.Value cmds = args.get(0);
-            ElaraScript.Value idV  = args.get(1);
+            Value cmds = args.get(0);
+            Value idV  = args.get(1);
 
             requireArray("sv_remove", cmds);
             requireString("sv_remove", idV);
 
-            Map<String, ElaraScript.Value> p = idPayload(idV.asString());
-            append(cmds.asArray(), "remove", ElaraScript.Value.map(p));
+            Map<String, Value> p = idPayload(idV.asString());
+            append(cmds.asArray(), "remove", Value.map(p));
             return cmds;
         });
 
         // sv_move(cmds, id, x, y) -> cmds
         engine.registerFunction("sv_move", args -> {
             if (args.size() != 4) throw new RuntimeException("sv_move(cmds, id, x, y) expects 4 args");
-            ElaraScript.Value cmds = args.get(0);
-            ElaraScript.Value idV  = args.get(1);
-            ElaraScript.Value xV   = args.get(2);
-            ElaraScript.Value yV   = args.get(3);
+            Value cmds = args.get(0);
+            Value idV  = args.get(1);
+            Value xV   = args.get(2);
+            Value yV   = args.get(3);
 
             requireArray("sv_move", cmds);
             requireString("sv_move", idV);
             requireNumber("sv_move", xV);
             requireNumber("sv_move", yV);
 
-            Map<String, ElaraScript.Value> p = idPayload(idV.asString());
+            Map<String, Value> p = idPayload(idV.asString());
             p.put("x", xV);
             p.put("y", yV);
 
-            append(cmds.asArray(), "move", ElaraScript.Value.map(p));
+            append(cmds.asArray(), "move", Value.map(p));
             return cmds;
         });
 
         // sv_rotate(cmds, id, r) -> cmds
         engine.registerFunction("sv_rotate", args -> {
             if (args.size() != 3) throw new RuntimeException("sv_rotate(cmds, id, r) expects 3 args");
-            ElaraScript.Value cmds = args.get(0);
-            ElaraScript.Value idV  = args.get(1);
-            ElaraScript.Value rV   = args.get(2);
+            Value cmds = args.get(0);
+            Value idV  = args.get(1);
+            Value rV   = args.get(2);
 
             requireArray("sv_rotate", cmds);
             requireString("sv_rotate", idV);
             requireNumber("sv_rotate", rV);
 
-            Map<String, ElaraScript.Value> p = idPayload(idV.asString());
+            Map<String, Value> p = idPayload(idV.asString());
             p.put("r", rV);
 
-            append(cmds.asArray(), "rotate", ElaraScript.Value.map(p));
+            append(cmds.asArray(), "rotate", Value.map(p));
             return cmds;
         });
 
         // sv_scale(cmds, id, sx, sy) -> cmds
         engine.registerFunction("sv_scale", args -> {
             if (args.size() != 4) throw new RuntimeException("sv_scale(cmds, id, sx, sy) expects 4 args");
-            ElaraScript.Value cmds = args.get(0);
-            ElaraScript.Value idV  = args.get(1);
-            ElaraScript.Value sxV  = args.get(2);
-            ElaraScript.Value syV  = args.get(3);
+            Value cmds = args.get(0);
+            Value idV  = args.get(1);
+            Value sxV  = args.get(2);
+            Value syV  = args.get(3);
 
             requireArray("sv_scale", cmds);
             requireString("sv_scale", idV);
             requireNumber("sv_scale", sxV);
             requireNumber("sv_scale", syV);
 
-            Map<String, ElaraScript.Value> p = idPayload(idV.asString());
+            Map<String, Value> p = idPayload(idV.asString());
             p.put("sx", sxV);
             p.put("sy", syV);
 
-            append(cmds.asArray(), "scale", ElaraScript.Value.map(p));
+            append(cmds.asArray(), "scale", Value.map(p));
             return cmds;
         });
 
         // sv_alpha(cmds, id, a) -> cmds (clamped 0..1)
         engine.registerFunction("sv_alpha", args -> {
             if (args.size() != 3) throw new RuntimeException("sv_alpha(cmds, id, a) expects 3 args");
-            ElaraScript.Value cmds = args.get(0);
-            ElaraScript.Value idV  = args.get(1);
-            ElaraScript.Value aV   = args.get(2);
+            Value cmds = args.get(0);
+            Value idV  = args.get(1);
+            Value aV   = args.get(2);
 
             requireArray("sv_alpha", cmds);
             requireString("sv_alpha", idV);
@@ -196,28 +197,28 @@ public final class SvLitePlugin {
             if (a < 0) a = 0;
             if (a > 1) a = 1;
 
-            Map<String, ElaraScript.Value> p = idPayload(idV.asString());
-            p.put("a", ElaraScript.Value.number(a));
+            Map<String, Value> p = idPayload(idV.asString());
+            p.put("a", Value.number(a));
 
-            append(cmds.asArray(), "alpha", ElaraScript.Value.map(p));
+            append(cmds.asArray(), "alpha", Value.map(p));
             return cmds;
         });
 
         // sv_z(cmds, id, z) -> cmds
         engine.registerFunction("sv_z", args -> {
             if (args.size() != 3) throw new RuntimeException("sv_z(cmds, id, z) expects 3 args");
-            ElaraScript.Value cmds = args.get(0);
-            ElaraScript.Value idV  = args.get(1);
-            ElaraScript.Value zV   = args.get(2);
+            Value cmds = args.get(0);
+            Value idV  = args.get(1);
+            Value zV   = args.get(2);
 
             requireArray("sv_z", cmds);
             requireString("sv_z", idV);
             requireNumber("sv_z", zV);
 
-            Map<String, ElaraScript.Value> p = idPayload(idV.asString());
+            Map<String, Value> p = idPayload(idV.asString());
             p.put("z", zV);
 
-            append(cmds.asArray(), "z", ElaraScript.Value.map(p));
+            append(cmds.asArray(), "z", Value.map(p));
             return cmds;
         });
 
@@ -234,23 +235,23 @@ public final class SvLitePlugin {
         engine.registerFunction("sv_masks", args -> {
             if (args.size() != 3) throw new RuntimeException("sv_masks(cmds, targetId, masks) expects 3 args");
 
-            ElaraScript.Value cmds = args.get(0);
-            ElaraScript.Value targetIdV = args.get(1);
-            ElaraScript.Value masksV = args.get(2);
+            Value cmds = args.get(0);
+            Value targetIdV = args.get(1);
+            Value masksV = args.get(2);
 
             requireArray("sv_masks", cmds);
             requireString("sv_masks", targetIdV);
             requireArray("sv_masks", masksV);
 
-            Map<String, ElaraScript.Value> payload = idPayload(targetIdV.asString());
+            Map<String, Value> payload = idPayload(targetIdV.asString());
 
-            List<ElaraScript.Value> outMasks = new ArrayList<>();
-            for (ElaraScript.Value entry : masksV.asArray()) {
+            List<Value> outMasks = new ArrayList<>();
+            for (Value entry : masksV.asArray()) {
                 outMasks.add(parseMaskEntry(entry));
             }
 
-            payload.put("masks", ElaraScript.Value.array(outMasks));
-            append(cmds.asArray(), "masks.set", ElaraScript.Value.map(payload));
+            payload.put("masks", Value.array(outMasks));
+            append(cmds.asArray(), "masks.set", Value.map(payload));
             return cmds;
         });
 
@@ -269,23 +270,23 @@ public final class SvLitePlugin {
         engine.registerFunction("sv_overlays", args -> {
             if (args.size() != 3) throw new RuntimeException("sv_overlays(cmds, targetId, overlays) expects 3 args");
 
-            ElaraScript.Value cmds = args.get(0);
-            ElaraScript.Value targetIdV = args.get(1);
-            ElaraScript.Value overlaysV = args.get(2);
+            Value cmds = args.get(0);
+            Value targetIdV = args.get(1);
+            Value overlaysV = args.get(2);
 
             requireArray("sv_overlays", cmds);
             requireString("sv_overlays", targetIdV);
             requireArray("sv_overlays", overlaysV);
 
-            Map<String, ElaraScript.Value> payload = idPayload(targetIdV.asString());
+            Map<String, Value> payload = idPayload(targetIdV.asString());
 
-            List<ElaraScript.Value> out = new ArrayList<>();
-            for (ElaraScript.Value entry : overlaysV.asArray()) {
+            List<Value> out = new ArrayList<>();
+            for (Value entry : overlaysV.asArray()) {
                 out.add(parseOverlayEntry(entry));
             }
 
-            payload.put("overlays", ElaraScript.Value.array(out));
-            append(cmds.asArray(), "overlays.set", ElaraScript.Value.map(payload));
+            payload.put("overlays", Value.array(out));
+            append(cmds.asArray(), "overlays.set", Value.map(payload));
             return cmds;
         });
     }
@@ -294,41 +295,41 @@ public final class SvLitePlugin {
     // Masks (resource selectors)
     // -------------------------
 
-    private static ElaraScript.Value parseMaskEntry(ElaraScript.Value entry) {
+    private static Value parseMaskEntry(Value entry) {
 
         // string id: default invert (a=1)
-        if (entry.getType() == ElaraScript.Value.Type.STRING) {
+        if (entry.getType() == Value.Type.STRING) {
             String id = entry.asString();
             validateId(id);
             String[] parts = splitId(id);
 
-            Map<String, ElaraScript.Value> m = new LinkedHashMap<>();
-            m.put("vector", ElaraScript.Value.string(parts[0]));
-            m.put("instance", ElaraScript.Value.string(parts[1]));
-            m.put("a", ElaraScript.Value.number(1));
-            return ElaraScript.Value.map(m);
+            Map<String, Value> m = new LinkedHashMap<>();
+            m.put("vector", Value.string(parts[0]));
+            m.put("instance", Value.string(parts[1]));
+            m.put("a", Value.number(1));
+            return Value.map(m);
         }
 
-        if (entry.getType() == ElaraScript.Value.Type.MAP) {
-            Map<String, ElaraScript.Value> in = entry.asMap();
+        if (entry.getType() == Value.Type.MAP) {
+            Map<String, Value> in = entry.asMap();
 
             String[] vi = parseVectorInstance(in);
             String vector = vi[0], instance = vi[1];
 
             int inv = 1; // default invert
-            ElaraScript.Value aV = in.get("a");
+            Value aV = in.get("a");
             if (aV != null) {
-                if (aV.getType() != ElaraScript.Value.Type.NUMBER) {
+                if (aV.getType() != Value.Type.NUMBER) {
                     throw new RuntimeException("sv_masks: mask 'a' must be number 0 or 1");
                 }
                 inv = (aV.asNumber() >= 0.5) ? 1 : 0;
             }
 
-            Map<String, ElaraScript.Value> m = new LinkedHashMap<>();
-            m.put("vector", ElaraScript.Value.string(vector));
-            m.put("instance", ElaraScript.Value.string(instance));
-            m.put("a", ElaraScript.Value.number(inv));
-            return ElaraScript.Value.map(m);
+            Map<String, Value> m = new LinkedHashMap<>();
+            m.put("vector", Value.string(vector));
+            m.put("instance", Value.string(instance));
+            m.put("a", Value.number(inv));
+            return Value.map(m);
         }
 
         throw new RuntimeException("sv_masks: each mask entry must be string id or map");
@@ -342,32 +343,32 @@ public final class SvLitePlugin {
             "srcOver", "multiply", "screen", "overlay", "srcATop"
     ));
 
-    private static ElaraScript.Value parseOverlayEntry(ElaraScript.Value entry) {
+    private static Value parseOverlayEntry(Value entry) {
 
         // string id: defaults
-        if (entry.getType() == ElaraScript.Value.Type.STRING) {
+        if (entry.getType() == Value.Type.STRING) {
             String id = entry.asString();
             validateId(id);
             String[] parts = splitId(id);
 
-            Map<String, ElaraScript.Value> o = new LinkedHashMap<>();
-            o.put("vector", ElaraScript.Value.string(parts[0]));
-            o.put("instance", ElaraScript.Value.string(parts[1]));
-            o.put("fill", ElaraScript.Value.string("#FFFFFFFF"));
-            o.put("blend", ElaraScript.Value.string("srcOver"));
-            return ElaraScript.Value.map(o);
+            Map<String, Value> o = new LinkedHashMap<>();
+            o.put("vector", Value.string(parts[0]));
+            o.put("instance", Value.string(parts[1]));
+            o.put("fill", Value.string("#FFFFFFFF"));
+            o.put("blend", Value.string("srcOver"));
+            return Value.map(o);
         }
 
-        if (entry.getType() == ElaraScript.Value.Type.MAP) {
-            Map<String, ElaraScript.Value> in = entry.asMap();
+        if (entry.getType() == Value.Type.MAP) {
+            Map<String, Value> in = entry.asMap();
 
             String[] vi = parseVectorInstance(in);
             String vector = vi[0], instance = vi[1];
 
             String fill = "#FFFFFFFF";
-            ElaraScript.Value fillV = in.get("fill");
+            Value fillV = in.get("fill");
             if (fillV != null) {
-                if (fillV.getType() != ElaraScript.Value.Type.STRING) {
+                if (fillV.getType() != Value.Type.STRING) {
                     throw new RuntimeException("sv_overlays: 'fill' must be string '#RRGGBB' or '#AARRGGBB'");
                 }
                 fill = fillV.asString();
@@ -377,9 +378,9 @@ public final class SvLitePlugin {
             }
 
             String blend = "srcOver";
-            ElaraScript.Value blendV = in.get("blend");
+            Value blendV = in.get("blend");
             if (blendV != null) {
-                if (blendV.getType() != ElaraScript.Value.Type.STRING) {
+                if (blendV.getType() != Value.Type.STRING) {
                     throw new RuntimeException("sv_overlays: 'blend' must be string");
                 }
                 blend = blendV.asString();
@@ -388,12 +389,12 @@ public final class SvLitePlugin {
                 throw new RuntimeException("sv_overlays: blend must be one of " + ALLOWED_BLEND + ". Got: " + blend);
             }
 
-            Map<String, ElaraScript.Value> o = new LinkedHashMap<>();
-            o.put("vector", ElaraScript.Value.string(vector));
-            o.put("instance", ElaraScript.Value.string(instance));
-            o.put("fill", ElaraScript.Value.string(fill));
-            o.put("blend", ElaraScript.Value.string(blend));
-            return ElaraScript.Value.map(o);
+            Map<String, Value> o = new LinkedHashMap<>();
+            o.put("vector", Value.string(vector));
+            o.put("instance", Value.string(instance));
+            o.put("fill", Value.string(fill));
+            o.put("blend", Value.string(blend));
+            return Value.map(o);
         }
 
         throw new RuntimeException("sv_overlays: each overlay entry must be string id or map");
@@ -404,10 +405,10 @@ public final class SvLitePlugin {
      * - { id:"vector.instance" }
      * - { vector:"v", instance:"i" }
      */
-    private static String[] parseVectorInstance(Map<String, ElaraScript.Value> in) {
-        ElaraScript.Value idV = in.get("id");
+    private static String[] parseVectorInstance(Map<String, Value> in) {
+        Value idV = in.get("id");
         if (idV != null) {
-            if (idV.getType() != ElaraScript.Value.Type.STRING) {
+            if (idV.getType() != Value.Type.STRING) {
                 throw new RuntimeException("SVLite: 'id' must be string if provided");
             }
             String id = idV.asString();
@@ -415,11 +416,11 @@ public final class SvLitePlugin {
             return splitId(id);
         }
 
-        ElaraScript.Value vV = in.get("vector");
-        ElaraScript.Value iV = in.get("instance");
+        Value vV = in.get("vector");
+        Value iV = in.get("instance");
         if (vV == null || iV == null ||
-                vV.getType() != ElaraScript.Value.Type.STRING ||
-                iV.getType() != ElaraScript.Value.Type.STRING) {
+                vV.getType() != Value.Type.STRING ||
+                iV.getType() != Value.Type.STRING) {
             throw new RuntimeException("SVLite: entry must contain either 'id' or ('vector' and 'instance')");
         }
 
@@ -442,15 +443,15 @@ public final class SvLitePlugin {
         }
     }
 
-    private static CanvasMeta extractAndNormalizeCanvasMeta(Map<String, ElaraScript.Value> payload) {
+    private static CanvasMeta extractAndNormalizeCanvasMeta(Map<String, Value> payload) {
 
         double x = 0, y = 0, r = 0, sx = 1, sy = 1;
         double z = 0;
         double a = 1;
 
-        ElaraScript.Value xformV = payload.get("xform");
-        if (xformV != null && xformV.getType() == ElaraScript.Value.Type.MAP) {
-            Map<String, ElaraScript.Value> xform = xformV.asMap();
+        Value xformV = payload.get("xform");
+        if (xformV != null && xformV.getType() == Value.Type.MAP) {
+            Map<String, Value> xform = xformV.asMap();
             x  = optNum(xform.get("x"), 0);
             y  = optNum(xform.get("y"), 0);
             r  = optNum(xform.get("r"), 0);
@@ -473,9 +474,9 @@ public final class SvLitePlugin {
         return new CanvasMeta(x, y, z, sx, sy, r, a);
     }
 
-    private static double optNum(ElaraScript.Value v, double dflt) {
+    private static double optNum(Value v, double dflt) {
         if (v == null) return dflt;
-        if (v.getType() != ElaraScript.Value.Type.NUMBER) return dflt;
+        if (v.getType() != Value.Type.NUMBER) return dflt;
         return v.asNumber();
     }
 
@@ -497,13 +498,13 @@ public final class SvLitePlugin {
     }
 
     /** Canonical identity payload for non-create commands: { id, vector, instance } */
-    private static Map<String, ElaraScript.Value> idPayload(String id) {
+    private static Map<String, Value> idPayload(String id) {
         validateId(id);
         String[] parts = splitId(id);
-        Map<String, ElaraScript.Value> m = new LinkedHashMap<>();
-        m.put("id", ElaraScript.Value.string(id));
-        m.put("vector", ElaraScript.Value.string(parts[0]));
-        m.put("instance", ElaraScript.Value.string(parts[1]));
+        Map<String, Value> m = new LinkedHashMap<>();
+        m.put("id", Value.string(id));
+        m.put("vector", Value.string(parts[0]));
+        m.put("instance", Value.string(parts[1]));
         return m;
     }
 
@@ -511,26 +512,26 @@ public final class SvLitePlugin {
     // Helpers
     // -------------------------
 
-    private static void append(List<ElaraScript.Value> cmds, String op, ElaraScript.Value payload) {
-        List<ElaraScript.Value> cmd = new ArrayList<>(2);
-        cmd.add(ElaraScript.Value.string(op));
+    private static void append(List<Value> cmds, String op, Value payload) {
+        List<Value> cmd = new ArrayList<>(2);
+        cmd.add(Value.string(op));
         cmd.add(payload);
-        cmds.add(ElaraScript.Value.array(cmd));
+        cmds.add(Value.array(cmd));
     }
 
-    private static void requireArray(String fn, ElaraScript.Value v) {
-        if (v.getType() != ElaraScript.Value.Type.ARRAY) throw new RuntimeException(fn + ": expected array");
+    private static void requireArray(String fn, Value v) {
+        if (v.getType() != Value.Type.ARRAY) throw new RuntimeException(fn + ": expected array");
     }
 
-    private static void requireMap(String fn, ElaraScript.Value v) {
-        if (v.getType() != ElaraScript.Value.Type.MAP) throw new RuntimeException(fn + ": expected map");
+    private static void requireMap(String fn, Value v) {
+        if (v.getType() != Value.Type.MAP) throw new RuntimeException(fn + ": expected map");
     }
 
-    private static void requireString(String fn, ElaraScript.Value v) {
-        if (v.getType() != ElaraScript.Value.Type.STRING) throw new RuntimeException(fn + ": expected string");
+    private static void requireString(String fn, Value v) {
+        if (v.getType() != Value.Type.STRING) throw new RuntimeException(fn + ": expected string");
     }
 
-    private static void requireNumber(String fn, ElaraScript.Value v) {
-        if (v.getType() != ElaraScript.Value.Type.NUMBER) throw new RuntimeException(fn + ": expected number");
+    private static void requireNumber(String fn, Value v) {
+        if (v.getType() != Value.Type.NUMBER) throw new RuntimeException(fn + ": expected number");
     }
 }

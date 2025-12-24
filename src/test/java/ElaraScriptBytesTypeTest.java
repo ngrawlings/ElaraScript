@@ -1,5 +1,5 @@
 import com.elara.script.ElaraScript;
-import com.elara.script.ElaraScript.Value;
+import com.elara.script.parser.Value;
 import com.elara.script.plugins.ElaraBinaryCodecPlugin;
 import org.junit.jupiter.api.Test;
 

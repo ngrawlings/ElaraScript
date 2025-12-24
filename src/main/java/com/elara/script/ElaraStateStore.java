@@ -5,6 +5,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import com.elara.script.parser.Value;
+
 /**
  * ElaraStateStore
  *
@@ -52,9 +54,9 @@ public final class ElaraStateStore {
      * Capture only the validated outputs (recommended default).
      * Values are converted to JSON-safe types.
      */
-    public ElaraStateStore captureOutputs(Map<String, ElaraScript.Value> outputs) {
+    public ElaraStateStore captureOutputs(Map<String, Value> outputs) {
         if (outputs == null) return this;
-        for (Map.Entry<String, ElaraScript.Value> e : outputs.entrySet()) {
+        for (Map.Entry<String, Value> e : outputs.entrySet()) {
             state.put(e.getKey(), ValueCodec.toPlainJava(e.getValue()));
         }
         return this;
@@ -63,9 +65,9 @@ public final class ElaraStateStore {
     /**
      * Capture the full debug environment (includes intermediates). Requires includeDebugEnv=true.
      */
-    public ElaraStateStore captureEnv(Map<String, ElaraScript.Value> env) {
+    public ElaraStateStore captureEnv(Map<String, Value> env) {
         if (env == null) return this;
-        for (Map.Entry<String, ElaraScript.Value> e : env.entrySet()) {
+        for (Map.Entry<String, Value> e : env.entrySet()) {
             state.put(e.getKey(), ValueCodec.toPlainJava(e.getValue()));
         }
         return this;
@@ -138,8 +140,8 @@ public final class ElaraStateStore {
         if (v instanceof Number) return ((Number) v).doubleValue();
         if (v instanceof String) return v;
 
-        if (v instanceof ElaraScript.Value) {
-            return ValueCodec.toPlainJava((ElaraScript.Value) v);
+        if (v instanceof Value) {
+            return ValueCodec.toPlainJava((Value) v);
         }
 
         if (v instanceof List) {
@@ -169,13 +171,13 @@ public final class ElaraStateStore {
     // ===================== VALUE CODEC =====================
 
     /**
-     * Converts ElaraScript.Value into JSON-safe Java types.
+     * Converts Value into JSON-safe Java types.
      * This is host-side only and keeps the engine clean.
      */
     public static final class ValueCodec {
         private ValueCodec() {}
 
-        public static Object toPlainJava(ElaraScript.Value v) {
+        public static Object toPlainJava(Value v) {
             if (v == null) return null;
             switch (v.getType()) {
                 case NULL:
@@ -190,23 +192,23 @@ public final class ElaraStateStore {
                     return v.asString();
                 case ARRAY: {
                     List<Object> out = new ArrayList<>();
-                    for (ElaraScript.Value item : v.asArray()) out.add(toPlainJava(item));
+                    for (Value item : v.asArray()) out.add(toPlainJava(item));
                     return out;
                 }
                 case MATRIX: {
                     List<Object> rows = new ArrayList<>();
-                    for (List<ElaraScript.Value> row : v.asMatrix()) {
+                    for (List<Value> row : v.asMatrix()) {
                         List<Object> r = new ArrayList<>();
-                        for (ElaraScript.Value item : row) r.add(toPlainJava(item));
+                        for (Value item : row) r.add(toPlainJava(item));
                         rows.add(r);
                     }
                     return rows;
                 }
                 case MAP: {
                     Map<String, Object> out = new LinkedHashMap<>();
-                    Map<String, ElaraScript.Value> m = v.asMap();
+                    Map<String, Value> m = v.asMap();
                     if (m != null) {
-                        for (Map.Entry<String, ElaraScript.Value> e : m.entrySet()) {
+                        for (Map.Entry<String, Value> e : m.entrySet()) {
                             out.put(e.getKey(), toPlainJava(e.getValue()));
                         }
                     }

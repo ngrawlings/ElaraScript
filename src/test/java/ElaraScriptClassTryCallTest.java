@@ -1,4 +1,6 @@
 import com.elara.script.ElaraScript;
+import com.elara.script.parser.Value;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
@@ -8,7 +10,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 public class ElaraScriptClassTryCallTest {
 
-    private static ElaraScript.Value run(ElaraScript es, String src) {
+    private static Value run(ElaraScript es, String src) {
         return es.run(src, "main", Collections.emptyList());
     }
 
@@ -29,8 +31,8 @@ public class ElaraScriptClassTryCallTest {
                 "}"
         );
 
-        ElaraScript.Value out = es.run(src, "main", Collections.emptyList());
-        List<ElaraScript.Value> a = out.asArray();
+        Value out = es.run(src, "main", Collections.emptyList());
+        List<Value> a = out.asArray();
         assertTrue(a.get(0).asBool());
         assertEquals(5.0, a.get(1).asNumber(), 0.0);
         assertEquals(0.0, a.get(2).asNumber(), 0.0);
@@ -51,8 +53,8 @@ public class ElaraScriptClassTryCallTest {
                 "}"
         );
 
-        ElaraScript.Value out = run(es, src);
-        List<ElaraScript.Value> arr = out.asArray();
+        Value out = run(es, src);
+        List<Value> arr = out.asArray();
         assertFalse(arr.get(0).asBool());
         assertTrue(arr.get(1).asNumber() >= 1.0);
     }
@@ -74,8 +76,8 @@ public class ElaraScriptClassTryCallTest {
                 "}"
         );
 
-        ElaraScript.Value out = run(es, src);
-        List<ElaraScript.Value> arr = out.asArray();
+        Value out = run(es, src);
+        List<Value> arr = out.asArray();
         assertFalse(arr.get(0).asBool());
         assertTrue(arr.get(1).asNumber() >= 1.0);
     }
@@ -100,8 +102,8 @@ public class ElaraScriptClassTryCallTest {
                 "}"
         );
 
-        ElaraScript.Value out = run(es, src);
-        List<ElaraScript.Value> arr = out.asArray();
+        Value out = run(es, src);
+        List<Value> arr = out.asArray();
         assertFalse(arr.get(0).asBool());
         assertTrue(arr.get(1).asNumber() >= 1.0);
     }
