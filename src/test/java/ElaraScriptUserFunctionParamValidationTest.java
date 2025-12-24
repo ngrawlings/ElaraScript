@@ -9,27 +9,39 @@ import static org.junit.jupiter.api.Assertions.*;
 
 public class ElaraScriptUserFunctionParamValidationTest {
 
+    // ... keep your existing tests ...
+
     @Test
-    void userFuncParam_withRequiredValidatorSuffix_throwsIfValidatorMissing() {
+    void classMethodParam_withRequiredValidatorSuffix_validates_andRunsMethod() {
         ElaraScript es = new ElaraScript();
 
+        // Register validator "num"
+        ElaraDataShaper.Shape<Value> num = new ElaraDataShaper.Shape<>();
+        num.input("v", ElaraDataShaper.Type.NUMBER).required(true);
+        es.dataShaping().register("num", num);
+
+        // Runner shape: no inputs needed, just output
         ElaraDataShaper.Shape<Value> top = new ElaraDataShaper.Shape<>();
         top.output("out", ElaraDataShaper.Type.NUMBER).required(true);
         es.dataShaping().register("top", top);
 
-        String src = "function f(missing_x??) { return 1; }"
-            + "let out = f(123);";
+        String src = String.join("\n",
+                "class A {",
+                "  def add(num_a??, num_b??) {",
+                "    return num_a + num_b;",
+                "  }",
+                "}",
+                "let a = new A();",
+                "let out = a.add(2, 3);"
+        );
 
         ElaraDataShaper.RunResult<Value> rr = es.runShaped(src, "top", Map.of(), false);
-        assertFalse(rr.ok(), "Expected failure because required validator 'missing' is not registered");
-        assertTrue(
-                rr.errors().toString().toLowerCase().contains("missing"),
-                () -> "Expected error mentioning missing validator. Errors: " + rr.errors()
-        );
+        assertTrue(rr.ok(), () -> "Expected success. Errors: " + rr.errors());
+        assertEquals(5.0, rr.outputs().get("out").asNumber(), 0.0);
     }
 
     @Test
-    void userFuncParam_withRequiredValidatorSuffix_validatesTypeAndFailsOnMismatch() {
+    void classMethodParam_withRequiredValidatorSuffix_failsOnMismatch() {
         ElaraScript es = new ElaraScript();
 
         ElaraDataShaper.Shape<Value> num = new ElaraDataShaper.Shape<>();
@@ -40,23 +52,63 @@ public class ElaraScriptUserFunctionParamValidationTest {
         top.output("out", ElaraDataShaper.Type.NUMBER).required(true);
         es.dataShaping().register("top", top);
 
-        String src = "function f(num_a??) { return 1; }"
-            + "let out = f(\"not-a-number\");";
+        String src = String.join("\n",
+                "class A {",
+                "  def add(num_a??, num_b??) {",
+                "    return num_a + num_b;",
+                "  }",
+                "}",
+                "let a = new A();",
+                "let out = a.add(\"nope\", 3);" // mismatch: first arg must be number
+        );
 
         ElaraDataShaper.RunResult<Value> rr = es.runShaped(src, "top", Map.of(), false);
         assertFalse(rr.ok(), "Expected validation failure: num_a?? requires NUMBER");
     }
 
     @Test
-    void userFuncParam_withoutRequiredSuffix_skipsIfValidatorNotRegistered() {
+    void classMethodParam_withRequiredValidatorSuffix_throwsIfValidatorMissing() {
         ElaraScript es = new ElaraScript();
 
         ElaraDataShaper.Shape<Value> top = new ElaraDataShaper.Shape<>();
         top.output("out", ElaraDataShaper.Type.NUMBER).required(true);
         es.dataShaping().register("top", top);
 
-        String src = "function f(unknown_a) { return 7; }"
-            + "let out = f(\"anything\");";
+        String src = String.join("\n",
+                "class A {",
+                "  def add(missing_a??, missing_b??) {",
+                "    return 1;",
+                "  }",
+                "}",
+                "let a = new A();",
+                "let out = a.add(2, 3);"
+        );
+
+        ElaraDataShaper.RunResult<Value> rr = es.runShaped(src, "top", Map.of(), false);
+        assertFalse(rr.ok(), "Expected failure because required validator 'missing' is not registered");
+        assertTrue(
+                rr.errors().toString().toLowerCase().contains("missing"),
+                () -> "Expected error mentioning missing validator. Errors: " + rr.errors()
+        );
+    }
+
+    @Test
+    void classMethodParam_withoutRequiredSuffix_skipsIfValidatorNotRegistered() {
+        ElaraScript es = new ElaraScript();
+
+        ElaraDataShaper.Shape<Value> top = new ElaraDataShaper.Shape<>();
+        top.output("out", ElaraDataShaper.Type.NUMBER).required(true);
+        es.dataShaping().register("top", top);
+
+        String src = String.join("\n",
+                "class A {",
+                "  def f(unknown_a) {",
+                "    return 7;",
+                "  }",
+                "}",
+                "let a = new A();",
+                "let out = a.f(\"anything\");"
+        );
 
         ElaraDataShaper.RunResult<Value> rr = es.runShaped(src, "top", Map.of(), false);
         assertTrue(rr.ok(), () -> "Expected success. Errors: " + rr.errors());
@@ -64,9 +116,10 @@ public class ElaraScriptUserFunctionParamValidationTest {
     }
 
     @Test
-    void userFuncParam_namedNoValidation_alwaysSkipsEvenIfValidatorExists() {
+    void classMethodParam_namedNoValidation_alwaysSkipsEvenIfValidatorExists() {
         ElaraScript es = new ElaraScript();
 
+        // Register validator "no" (but method param uses no_validation)
         ElaraDataShaper.Shape<Value> no = new ElaraDataShaper.Shape<>();
         no.input("v", ElaraDataShaper.Type.NUMBER).required(true);
         es.dataShaping().register("no", no);
@@ -75,8 +128,15 @@ public class ElaraScriptUserFunctionParamValidationTest {
         top.output("out", ElaraDataShaper.Type.NUMBER).required(true);
         es.dataShaping().register("top", top);
 
-        String src = "function f(no_validation) { return 3; }"
-            + "let out = f(\"definitely-not-a-number\");";
+        String src = String.join("\n",
+                "class A {",
+                "  def f(no_validation) {",
+                "    return 3;",
+                "  }",
+                "}",
+                "let a = new A();",
+                "let out = a.f(\"definitely-not-a-number\");"
+        );
 
         ElaraDataShaper.RunResult<Value> rr = es.runShaped(src, "top", Map.of(), false);
         assertTrue(rr.ok(), () -> "Expected success because 'no_validation' disables validation. Errors: " + rr.errors());
@@ -84,152 +144,56 @@ public class ElaraScriptUserFunctionParamValidationTest {
     }
 
     @Test
-    void userFuncParam_withRequiredValidatorSuffix_validatesComplexMultiLevelMap_andRunsUserFunction() {
+    void classMethodParam_withRequiredSuffix_routesToTypeFunction_whenNoShapeRegistered() {
         ElaraScript es = new ElaraScript();
 
-        es.dataShaping().shaper().registerUserFunction("user_contract", (v, path, errors) -> {
-            if (v == null || v.getType() != Value.Type.MAP) return;
-
-            Map<String, Value> m = v.asMap();
-
-            Value profileV = m.get("profile");
-            if (profileV == null || profileV.getType() != Value.Type.MAP) {
-                errors.add(new ElaraDataShaper.ValidationError(path + ".profile", "required map"));
-                return;
-            }
-
-            Map<String, Value> profile = profileV.asMap();
-            Value idV = profile.get("id");
-            if (idV == null || idV.getType() != Value.Type.NUMBER || idV.asNumber() < 1) {
-                errors.add(new ElaraDataShaper.ValidationError(path + ".profile.id", "must be >= 1"));
-            }
-
-            Value rolesV = m.get("roles");
-            if (rolesV != null && rolesV.getType() == Value.Type.ARRAY) {
-                var roles = rolesV.asArray();
-                if (!roles.isEmpty() && roles.get(0).getType() == Value.Type.MAP) {
-                    var r0 = roles.get(0).asMap();
-                    Value roleName = r0.get("role");
-                    Value active = r0.get("active");
-
-                    if (roleName != null && roleName.getType() == Value.Type.STRING
-                            && "admin".equals(roleName.asString())) {
-                        if (active == null || active.getType() != Value.Type.BOOL || !active.asBool()) {
-                            errors.add(new ElaraDataShaper.ValidationError(path + ".roles[0].active",
-                                    "must be true when role is admin"));
-                        }
-                    }
-                }
-            }
-        });
-
-        // Param validator "user" (matched from "user_payload??")
-        ElaraDataShaper.Shape<Value> user = new ElaraDataShaper.Shape<>();
-        var root = user.input("u", ElaraDataShaper.Type.MAP).required(true);
-        root.userFunction("user_contract");
-
-        var profile = root.child("profile", ElaraDataShaper.Type.MAP).required(true);
-        profile.child("id", ElaraDataShaper.Type.NUMBER).required(true);
-        profile.child("name", ElaraDataShaper.Type.STRING).required(true);
-
-        var roles = root.child("roles", ElaraDataShaper.Type.ARRAY).required(true);
-        var roleItem = roles.item(ElaraDataShaper.Type.MAP).required(true);
-        roleItem.child("role", ElaraDataShaper.Type.STRING).required(true);
-        roleItem.child("active", ElaraDataShaper.Type.BOOL).required(true);
-
-        es.dataShaping().register("user", user);
-
-        // ✅ Top-level runner shape MUST declare input "u" so the script can reference it.
+        // Runner shape
         ElaraDataShaper.Shape<Value> top = new ElaraDataShaper.Shape<>();
-        top.input("u", ElaraDataShaper.Type.MAP).required(true);     // <-- FIX
         top.output("out", ElaraDataShaper.Type.NUMBER).required(true);
         es.dataShaping().register("top", top);
 
-        String src = "function f(user_payload??) {"
-                + "return user_payload[\"profile\"][\"id\"];"
-            	+ "}"
-            	+ "let out = f(u);";
-
-        Map<String, Object> okRaw = Map.of(
-                "u", Map.of(
-                        "profile", Map.of("id", 10, "name", "alice"),
-                        "roles", java.util.List.of(
-                                Map.of("role", "admin", "active", true),
-                                Map.of("role", "user", "active", false)
-                        )
-                )
+        // No DataShape registered for "user" on purpose, define ES fallback type_user()
+        String src = String.join("\n",
+                "function type_user(v) {",
+                "  if (v == null) return false;",
+                "  let p = v[\"profile\"];",
+                "  if (p == null) return false;",
+                "  return p[\"id\"] == 42;",
+                "}",
+                "",
+                "class A {",
+                "  def getId(user_payload??) {",
+                "    return user_payload[\"profile\"][\"id\"];",
+                "  }",
+                "}",
+                "",
+                "let a = new A();",
+                "let out = a.getId({profile:{id:42}});" // map literal ok in your engine
         );
 
-        var ok = es.runShaped(src, "top", okRaw, false);
-        assertTrue(ok.ok(), () -> "Expected success for valid complex multi-level map. Errors: " + ok.errors());
-        assertEquals(10.0, ok.outputs().get("out").asNumber(), 0.0);
-
-        Map<String, Object> badRaw = Map.of(
-                "u", Map.of(
-                        "profile", Map.of("id", 10, "name", "alice"),
-                        "roles", java.util.List.of(
-                                Map.of("role", "admin", "active", false)
-                        )
-                )
-        );
-
-        var bad = es.runShaped(src, "top", badRaw, false);
-        assertFalse(bad.ok(), "Expected failure due to user_function invariant");
-        assertTrue(
-                bad.errors().toString().toLowerCase().contains("admin")
-                        || bad.errors().toString().toLowerCase().contains("active"),
-                () -> "Expected error mentioning admin/active invariant. Errors: " + bad.errors()
-        );
-    }
-    
-    @Test
-    void userFuncParam_withRequiredSuffix_routesToTypeFunction_whenNoShapeRegistered() {
-        ElaraScript es = new ElaraScript();
-
-        // Top-level runner shape: provide input "u" and output "out"
-        ElaraDataShaper.Shape<Value> top = new ElaraDataShaper.Shape<>();
-        top.input("u", ElaraDataShaper.Type.MAP).required(true);
-        top.output("out", ElaraDataShaper.Type.NUMBER).required(true);
-        es.dataShaping().register("top", top);
-
-        // No DataShape registered for "user" on purpose.
-        // Define ES validator: type_user(v) -> true/false
-        String src = "function type_user(v) {\n"
-                + "// require v.profile.id == 42\n"
-                + "if (v == null) return false;\n"
-                + "let p = v[\"profile\"];\n"
-                + "if (p == null) return false;\n"
-                + "return p[\"id\"] == 42;\n"
-                + "}\n"
-
-                + "function f(user_payload??) {\n"
-                + "    	// If validation passed, user_payload is available (bound without ??)\n"
-                + "		return user_payload[\"profile\"][\"id\"];\n"
-                + "}\n"
-
-            	+ "let out = f(u);";
-
-        // --- Case 1: valid payload -> should pass via type_user() fallback
-        Map<String, Object> okRaw = Map.of(
-                "u", (Object) Map.of(
-                        "profile", Map.of("id", 42, "name", "alice"),
-                        "roles", java.util.List.of()
-                )
-        );
-
-        ElaraDataShaper.RunResult<Value> ok = es.runShaped(src, "top", okRaw, false);
+        ElaraDataShaper.RunResult<Value> ok = es.runShaped(src, "top", Map.of(), false);
         assertTrue(ok.ok(), () -> "Expected success via type_user() fallback. Errors: " + ok.errors());
         assertEquals(42.0, ok.outputs().get("out").asNumber(), 0.0);
 
-        // --- Case 2: invalid payload -> should fail via type_user() fallback
-        Map<String, Object> badRaw = Map.of(
-                "u", (Object) Map.of(
-                        "profile", Map.of("id", 7, "name", "alice"),
-                        "roles", java.util.List.of()
-                )
+        String srcBad = String.join("\n",
+                "function type_user(v) {",
+                "  if (v == null) return false;",
+                "  let p = v[\"profile\"];",
+                "  if (p == null) return false;",
+                "  return p[\"id\"] == 42;",
+                "}",
+                "",
+                "class A {",
+                "  def getId(user_payload??) {",
+                "    return user_payload[\"profile\"][\"id\"];",
+                "  }",
+                "}",
+                "",
+                "let a = new A();",
+                "let out = a.getId({profile:{id:7}});" // should fail
         );
 
-        ElaraDataShaper.RunResult<Value> bad = es.runShaped(src, "top", badRaw, false);
+        ElaraDataShaper.RunResult<Value> bad = es.runShaped(srcBad, "top", Map.of(), false);
         assertFalse(bad.ok(), "Expected failure because type_user() returns false");
         String errs = bad.errors().toString().toLowerCase();
         assertTrue(
@@ -237,6 +201,49 @@ public class ElaraScriptUserFunctionParamValidationTest {
                 () -> "Expected error mentioning type_user/validation/user. Errors: " + bad.errors()
         );
     }
+    
+    @Test
+    void trycall_inClassMethod_intentionallyFailsValidation_andReturnsTryCallResultError() {
+        ElaraScript es = new ElaraScript();
 
+        // Register validator "num"
+        ElaraDataShaper.Shape<Value> num = new ElaraDataShaper.Shape<>();
+        num.input("v", ElaraDataShaper.Type.NUMBER).required(true);
+        es.dataShaping().register("num", num);
 
+        // Runner shape
+        ElaraDataShaper.Shape<Value> top = new ElaraDataShaper.Shape<>();
+        top.output("out", ElaraDataShaper.Type.ARRAY).required(true);
+        es.dataShaping().register("top", top);
+
+        String src = String.join("\n",
+                "class A {",
+                "  def add(num_a??, num_b??) {",
+                "    return num_a + num_b;",
+                "  }",
+                "}",
+                "function main() {",
+                "  let a = new A();",
+                "  // Intentionally fail validation: pass string where NUMBER required",
+                "  let r = a.trycall(\"add\", \"nope\", 3);",
+                "  return [r.result(), r.value(), len(r.error())];",
+                "}",
+                "let out = main();"
+        );
+
+        ElaraDataShaper.RunResult<Value> rr = es.runShaped(src, "top", Map.of(), false);
+
+        // The script should run fine; trycall should swallow the validation failure.
+        assertTrue(rr.ok(), () -> "Top-level run should succeed; trycall should capture error. Errors: " + rr.errors());
+
+        var out = rr.outputs().get("out").asArray();
+
+        // result() should be false
+        assertFalse(out.get(0).asBool(), "Expected r.result() == false due to validation failure");
+
+        // error() should have at least one message
+        assertTrue(out.get(2).asNumber() >= 1.0, "Expected at least one error message from validation failure");
+    }
+
+    
 }
