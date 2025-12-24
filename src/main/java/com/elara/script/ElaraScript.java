@@ -31,7 +31,7 @@ public class ElaraScript {
 
     /** Public value type used by host code. */
     public static final class Value {
-        public enum Type { NUMBER, BOOL, STRING, FUNC, BYTES, ARRAY, MATRIX, MAP, NULL }
+        public enum Type { NUMBER, BOOL, STRING, FUNC, BYTES, ARRAY, MATRIX, MAP, CLASS, CLASS_INSTANCE, NULL }
 
         private final Type type;
         private final Object value;
@@ -55,6 +55,33 @@ public class ElaraScript {
             if (m == null) return new Value(Type.MAP, null);
             return new Value(Type.MAP, new LinkedHashMap<>(m));
         }
+        public static Value clazz(ClassDescriptor c) { return new Value(Type.CLASS, c); }
+
+        /** Stateless class descriptor (no instance state yet). */
+        public static final class ClassDescriptor {
+            public final String name;
+            public final LinkedHashMap<String, Object> methods; // value: Interpreter.UserFunction later
+
+            public ClassDescriptor(String name, LinkedHashMap<String, Object> methods) {
+                this.name = name;
+                this.methods = (methods == null) ? new LinkedHashMap<>() : methods;
+            }
+        }
+        
+        public static final class ClassInstance {
+            public final String className;
+            public final String uuid;
+
+            public ClassInstance(String className, String uuid) {
+                this.className = className;
+                this.uuid = uuid;
+            }
+
+            public String stateKey() {
+                return className + "." + uuid;
+            }
+        }
+
         public static Value nil() { return new Value(Type.NULL, null); }
 
         public Type getType() { return type; }
@@ -103,6 +130,13 @@ public class ElaraScript {
         public Map<String, Value> asMap() {
             if (type != Type.MAP) throw new RuntimeException("Expected map, got " + type);
             return (Map<String, Value>) value;
+        }
+        
+        public ClassInstance asClassInstance() {
+            if (type != Type.CLASS_INSTANCE) {
+                throw new RuntimeException("Expected class instance, got " + type);
+            }
+            return (ClassInstance) value;
         }
 
         @Override
@@ -293,6 +327,7 @@ public class ElaraScript {
 
         LET, IF, ELSE, WHILE, FOR, TRUE, FALSE, NULL,
         FUNCTION, RETURN, BREAK,
+        CLASS, DEF, NEW,
 
         EOF
     }
@@ -330,6 +365,9 @@ public class ElaraScript {
             map.put("false", TokenType.FALSE);
             map.put("null", TokenType.NULL);
             map.put("function", TokenType.FUNCTION);
+            map.put("class", TokenType.CLASS);
+            map.put("def", TokenType.DEF);
+            map.put("new", TokenType.NEW);
             map.put("return", TokenType.RETURN);
             map.put("break", TokenType.BREAK);
             keywords = Collections.unmodifiableMap(map);
@@ -481,6 +519,8 @@ public class ElaraScript {
         R visitAssignExpr(Assign expr);
         R visitLogicalExpr(Logical expr);
         R visitCallExpr(Call expr);
+        R visitMethodCallExpr(MethodCallExpr expr);
+        R visitNewExpr(NewExpr expr);
         R visitIndexExpr(Index expr);
         R visitSetIndexExpr(SetIndex expr);
     }
@@ -561,6 +601,8 @@ public class ElaraScript {
         }
         public <R> R accept(ExprVisitor<R> visitor) { return visitor.visitLogicalExpr(this); }
     }
+    
+    
 
     private static final class Call implements Expr {
         final Expr callee;
@@ -573,6 +615,37 @@ public class ElaraScript {
         }
         public <R> R accept(ExprVisitor<R> visitor) { return visitor.visitCallExpr(this); }
     }
+    
+    public static class MethodCallExpr implements Expr {
+        public final Expr receiver;      // expression producing CLASS_INSTANCE
+        public final Token method;       // identifier token
+        public final List<Expr> args;
+
+        public MethodCallExpr(Expr receiver, Token method, List<Expr> args) {
+            this.receiver = receiver;
+            this.method = method;
+            this.args = args;
+        }
+
+        @Override
+        public Value accept(ExprVisitor visitor) {
+            return (Value) visitor.visitMethodCallExpr(this);
+        }
+    }
+    
+    public static class NewExpr implements Expr {
+        public final Token className;
+
+        public NewExpr(Token className) {
+            this.className = className;
+        }
+
+        @Override
+        public Value accept(ExprVisitor visitor) {
+            return (Value) visitor.visitNewExpr(this);
+        }
+    }
+
 
     /**
      * Function-call argument wrapper to support the spread operator:
@@ -615,6 +688,7 @@ public class ElaraScript {
         void visitIfStmt(If stmt);
         void visitWhileStmt(While stmt);
         void visitFunctionStmt(FunctionStmt stmt);
+        void visitClassStmt(ClassStmt stmt);
         void visitReturnStmt(ReturnStmt stmt);
         void visitBreakStmt(BreakStmt stmt);
     }
@@ -671,8 +745,22 @@ public class ElaraScript {
             this.body = body;
         }
 
-        public void accept(StmtVisitor visitor) { visitor.visitFunctionStmt(this); }
+    public void accept(StmtVisitor visitor) { visitor.visitFunctionStmt(this); }
+    
     }
+    
+    private static final class ClassStmt implements Stmt {
+        final Token name;
+        final List<FunctionStmt> methods;
+
+        ClassStmt(Token name, List<FunctionStmt> methods) {
+            this.name = name;
+            this.methods = methods;
+        }
+
+        public void accept(StmtVisitor visitor) { visitor.visitClassStmt(this); }
+    }
+
 
     private static final class ReturnStmt implements Stmt {
         final Token keyword;
@@ -710,6 +798,7 @@ public class ElaraScript {
         }
 
         private Stmt declaration() {
+            if (match(TokenType.CLASS)) return classDeclaration();
             if (match(TokenType.FUNCTION)) return functionDeclaration();
             if (match(TokenType.LET)) return varDeclaration();
             return statement();
@@ -734,6 +823,70 @@ public class ElaraScript {
 
             List<Stmt> body = block();
             return new FunctionStmt(name, params, body);
+        }
+
+        private Stmt classDeclaration() {
+            Token name = consume(TokenType.IDENTIFIER, "Expect class name.");
+            consume(TokenType.LEFT_BRACE, "Expect '{' after class name.");
+
+            List<FunctionStmt> methods = new ArrayList<>();
+
+            while (!check(TokenType.RIGHT_BRACE) && !isAtEnd()) {
+                if (match(TokenType.DEF)) {
+                    // IMPORTANT: add the parsed method to the list
+                    methods.add(defFunction("method"));
+                } else {
+                    throw error(peek(), "Only 'def' declarations are allowed inside a class body.");
+                }
+            }
+
+            consume(TokenType.RIGHT_BRACE, "Expect '}' after class body.");
+
+            // If your ClassStmt.name is String:
+            return new ClassStmt(name, methods);
+        }
+
+        /** Parses a class method declaration after having consumed 'def'. */
+        private FunctionStmt defDeclaration(String className) {
+            Token methodName = consume(TokenType.IDENTIFIER, "Expect method name.");
+            consume(TokenType.LEFT_PAREN, "Expect '(' after method name.");
+
+            List<Token> params = new ArrayList<>();
+            if (!check(TokenType.RIGHT_PAREN)) {
+                do {
+                    if (params.size() >= 64) {
+                        throw error(peek(), "Too many parameters (max 64).");
+                    }
+                    params.add(consume(TokenType.IDENTIFIER, "Expect parameter name."));
+                } while (match(TokenType.COMMA));
+            }
+            consume(TokenType.RIGHT_PAREN, "Expect ')' after parameters.");
+
+            consume(TokenType.LEFT_BRACE, "Expect '{' before method body.");
+            List<Stmt> body = block();
+
+            // Store as qualified name for later method dispatch rules: MyClass.myMethod
+            Token qualified = new Token(TokenType.IDENTIFIER, className + "." + methodName.lexeme, null, methodName.line);
+            return new FunctionStmt(qualified, params, body);
+        }
+        
+        private FunctionStmt defFunction(String kind) {
+            Token name = consume(TokenType.IDENTIFIER, "Expect " + kind + " name.");
+            consume(TokenType.LEFT_PAREN, "Expect '(' after " + kind + " name.");
+
+            List<Token> parameters = new ArrayList<>();
+            if (!check(TokenType.RIGHT_PAREN)) {
+                do {
+                    parameters.add(consume(TokenType.IDENTIFIER, "Expect parameter name."));
+                } while (match(TokenType.COMMA));
+            }
+            consume(TokenType.RIGHT_PAREN, "Expect ')' after parameters.");
+
+            consume(TokenType.LEFT_BRACE, "Expect '{' before " + kind + " body.");
+            List<Stmt> body = block(); // your existing block() that reads until RIGHT_BRACE
+
+            // Match your FunctionStmt constructor (String vs Token name)
+            return new FunctionStmt(name, parameters, body);
         }
 
         private Stmt varDeclaration() {
@@ -960,17 +1113,27 @@ public class ElaraScript {
 
         private Expr call() {
             Expr expr = primary();
+
             while (true) {
                 if (match(TokenType.LEFT_PAREN)) {
+                    // existing normal function call parse...
                     expr = finishCall(expr);
-                } else if (match(TokenType.LEFT_BRACKET)) {
-                    Expr index = expression();
-                    Token bracket = consume(TokenType.RIGHT_BRACKET, "Expect ']' after index.");
-                    expr = new Index(expr, index, bracket);
+                } else if (match(TokenType.DOT)) {
+                    Token method = consume(TokenType.IDENTIFIER, "Expect method name after '.'.");
+                    consume(TokenType.LEFT_PAREN, "Expect '(' after method name.");
+                    List<Expr> args = new ArrayList<>();
+                    if (!check(TokenType.RIGHT_PAREN)) {
+                        do {
+                            args.add(expression());
+                        } while (match(TokenType.COMMA));
+                    }
+                    consume(TokenType.RIGHT_PAREN, "Expect ')' after arguments.");
+                    expr = new MethodCallExpr(expr, method, args);
                 } else {
                     break;
                 }
             }
+
             return expr;
         }
 
@@ -1039,6 +1202,14 @@ public class ElaraScript {
                 consume(TokenType.RIGHT_BRACE, "Expect '}' after map literal.");
                 return new MapLiteral(entries);
             }
+            
+            if (match(TokenType.NEW)) {
+                Token name = consume(TokenType.IDENTIFIER, "Expect class name after 'new'.");
+                consume(TokenType.LEFT_PAREN, "Expect '(' after class name.");
+                consume(TokenType.RIGHT_PAREN, "Expect ')' after new expression.");
+                return new NewExpr(name);
+            }
+
 
             throw error(peek(), "Expect expression.");
         }
@@ -1091,6 +1262,7 @@ public class ElaraScript {
         private final Map<String, BuiltinFunction> functions;
         private final DataShapingRegistry shapingRegistry;
         private final Map<String, UserFunction> userFunctions = new LinkedHashMap<>();
+        private final Map<String, Value.ClassDescriptor> classes = new HashMap<>();
         private final Deque<CallFrame> callStack = new ArrayDeque<CallFrame>();
         private final int maxDepth;
         private final Mode mode;
@@ -1251,6 +1423,38 @@ public class ElaraScript {
             }
             userFunctions.put(name, new UserFunction(name, stmt.params, stmt.body, env));
         }
+
+        @Override
+        public void visitClassStmt(ClassStmt stmt) {
+            String className = stmt.name.lexeme; // or stmt.name.lexeme if Token
+
+            LinkedHashMap<String, Object> methods = new LinkedHashMap<>();
+            
+            for (FunctionStmt fn : stmt.methods) {
+                String mName = fn.name.lexeme; // or fn.name.lexeme if Token
+
+                // Compile into a callable function object NOW (so method calls work)
+                UserFunction uf = new UserFunction(
+                        className + "." + mName,   // debug name only
+                        fn.params,
+                        fn.body,
+                        env                         // closure
+                );
+
+                // IMPORTANT: store by SIMPLE name
+                methods.put(mName, uf);
+            }
+
+            Value.ClassDescriptor desc = new Value.ClassDescriptor(className, methods);
+
+            // If you're keeping class descriptors in env now:
+            env.define(className, new Value(Value.Type.CLASS, desc));
+            // (or however you currently store it)
+
+            // And/or keep registry:
+            classes.put(className, desc);
+        }
+
 
         public void visitReturnStmt(ReturnStmt stmt) {
             throw new ReturnSignal(stmt.value == null ? Value.nil() : eval(stmt.value));
@@ -1552,6 +1756,35 @@ public class ElaraScript {
             }            reportSystemError("fn_not_found", name, expr.paren, "Unknown function: " + name);
             throw new RuntimeException("Unknown function: " + name);
         }
+        
+        @Override
+        public Value visitMethodCallExpr(MethodCallExpr expr) {
+            Value recv = eval(expr.receiver);
+            if (recv.getType() != Value.Type.CLASS_INSTANCE) {
+                throw new RuntimeException("Only class instances support '.' method calls.");
+            }
+
+            Value.ClassInstance inst = recv.asClassInstance();
+
+            Value.ClassDescriptor desc = classes.get(inst.className);
+            if (desc == null) {
+                throw new RuntimeException("Unknown class: " + inst.className);
+            }
+
+            Object fnObj = desc.methods.get(expr.method.lexeme);
+            if (!(fnObj instanceof UserFunction)) {
+                throw new RuntimeException("Unknown method: " + inst.className + "." + expr.method.lexeme);
+            }
+
+            List<Value> args = new ArrayList<>();
+            for (Expr a : expr.args) args.add(eval(a));
+
+            return ((UserFunction) fnObj).callWithThis(this, recv, args);
+        }
+
+        private Value callMethodWithThis(UserFunction fn, Value thisValue, List<Value> args) {
+            return fn.callWithThis(this, thisValue, args);
+        }
 
         private Value invokeByName(String targetName, List<Value> args) {
             UserFunction uf = userFunctions.get(targetName);
@@ -1619,6 +1852,22 @@ public class ElaraScript {
                 default: return false;
             }
         }
+        
+        private Value evalNew(String className) {
+            Value.ClassDescriptor desc = classes.get(className);
+            if (desc == null) throw new RuntimeException("Unknown class: " + className);
+
+            String uuid = java.util.UUID.randomUUID().toString();
+            String key = className + "." + uuid;
+
+            // Create instance state map (use your existing MAP representation)
+            LinkedHashMap<String, Value> state = new LinkedHashMap<>();
+            env.define(key, Value.map(state)); // <-- adapt to your actual MAP constructor
+
+            // Return lightweight instance handle
+            Value.ClassInstance inst = new Value.ClassInstance(className, uuid);
+            return new Value(Value.Type.CLASS_INSTANCE, inst);
+        }
 
         private boolean isEqual(Value a, Value b) {
             if (a.getType() == Value.Type.NULL && b.getType() == Value.Type.NULL) return true;
@@ -1648,6 +1897,12 @@ public class ElaraScript {
                     if (am == null || bm == null) return false;
                     return am.equals(bm);
                 }
+                case CLASS_INSTANCE: {
+                    Value.ClassInstance ca = a.asClassInstance();
+                    Value.ClassInstance cb = b.asClassInstance();
+                    return ca.className.equals(cb.className) && ca.uuid.equals(cb.uuid);
+                }
+
                 default: return true;
             }
         }
@@ -1724,6 +1979,41 @@ public class ElaraScript {
                     interpreter.env = previous;
                 }
             }
+            
+            Value callWithThis(Interpreter interpreter, Value thisValue, List<Value> args) {
+                if (args.size() != params.size()) {
+                    throw new RuntimeException(name + "() expects " + params.size() + " arguments, got " + args.size());
+                }
+
+                Environment previous = interpreter.env;
+                interpreter.env = new Environment(closure);
+                try {
+                    // Inject `this` FIRST
+                    interpreter.env.define("this", thisValue);
+
+                    // Bind parameters (same logic as call())
+                    for (int i = 0; i < params.size(); i++) {
+                        String pRaw = params.get(i).lexeme;     // e.g. "user_payload??"
+                        Value v = args.get(i);
+
+                        v = interpreter.maybeValidateUserArg(name, pRaw, v);
+
+                        String pVar = pRaw.endsWith("??") ? pRaw.substring(0, pRaw.length() - 2) : pRaw;
+                        interpreter.env.define(pVar, v);
+                    }
+
+                    try {
+                        for (Stmt s : body) s.accept(interpreter);
+                    } catch (ReturnSignal rs) {
+                        return rs.value;
+                    }
+
+                    return Value.nil();
+                } finally {
+                    interpreter.env = previous;
+                }
+            }
+
         }
 
 		@Override
@@ -1736,6 +2026,12 @@ public class ElaraScript {
             }
             return Value.map(out);
 		}
+
+		@Override
+		public Value visitNewExpr(NewExpr expr) {
+		    return evalNew(expr.className.lexeme);
+		}
+
     }
 
     // ===================== ENGINE PUBLIC API =====================
