@@ -635,9 +635,11 @@ public class ElaraScript {
     
     public static class NewExpr implements Expr {
         public final Token className;
+        public final List<Expr> args;
 
-        public NewExpr(Token className) {
+        public NewExpr(Token className, List<Expr> args) {
             this.className = className;
+            this.args = (args == null) ? new ArrayList<>() : args;
         }
 
         @Override
@@ -645,7 +647,6 @@ public class ElaraScript {
             return (Value) visitor.visitNewExpr(this);
         }
     }
-
 
     /**
      * Function-call argument wrapper to support the spread operator:
@@ -1206,10 +1207,17 @@ public class ElaraScript {
             if (match(TokenType.NEW)) {
                 Token name = consume(TokenType.IDENTIFIER, "Expect class name after 'new'.");
                 consume(TokenType.LEFT_PAREN, "Expect '(' after class name.");
-                consume(TokenType.RIGHT_PAREN, "Expect ')' after new expression.");
-                return new NewExpr(name);
-            }
 
+                List<Expr> args = new ArrayList<>();
+                if (!check(TokenType.RIGHT_PAREN)) {
+                    do {
+                        args.add(expression());
+                    } while (match(TokenType.COMMA));
+                }
+
+                consume(TokenType.RIGHT_PAREN, "Expect ')' after arguments.");
+                return new NewExpr(name, args);
+            }
 
             throw error(peek(), "Expect expression.");
         }
@@ -1853,21 +1861,30 @@ public class ElaraScript {
             }
         }
         
-        private Value evalNew(String className) {
+        private Value evalNew(String className, List<Value> args) {
             Value.ClassDescriptor desc = classes.get(className);
             if (desc == null) throw new RuntimeException("Unknown class: " + className);
 
             String uuid = java.util.UUID.randomUUID().toString();
             String key = className + "." + uuid;
 
-            // Create instance state map (use your existing MAP representation)
+            // Create state map (match your MAP representation)
             LinkedHashMap<String, Value> state = new LinkedHashMap<>();
-            env.define(key, Value.map(state)); // <-- adapt to your actual MAP constructor
+            env.define(key, Value.map(state)); // <-- adapt to your actual map constructor
 
-            // Return lightweight instance handle
+            // Create instance handle
             Value.ClassInstance inst = new Value.ClassInstance(className, uuid);
-            return new Value(Value.Type.CLASS_INSTANCE, inst);
+            Value instanceValue = new Value(Value.Type.CLASS_INSTANCE, inst);
+
+            // Invoke constructor if present
+            Object ctorObj = desc.methods.get("constructor");
+            if (ctorObj instanceof UserFunction) {
+                ((UserFunction) ctorObj).callWithThis(this, instanceValue, args);
+            }
+
+            return instanceValue;
         }
+
 
         private boolean isEqual(Value a, Value b) {
             if (a.getType() == Value.Type.NULL && b.getType() == Value.Type.NULL) return true;
@@ -2029,8 +2046,13 @@ public class ElaraScript {
 
 		@Override
 		public Value visitNewExpr(NewExpr expr) {
-		    return evalNew(expr.className.lexeme);
+		    List<Value> args = new ArrayList<>();
+		    for (Expr a : expr.args) {
+		        args.add(eval(a)); // your interpreter uses eval()
+		    }
+		    return evalNew(expr.className.lexeme, args);
 		}
+
 
     }
 
