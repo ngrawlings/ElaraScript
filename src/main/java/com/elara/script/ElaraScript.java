@@ -1117,11 +1117,16 @@ public class ElaraScript {
 
             while (true) {
                 if (match(TokenType.LEFT_PAREN)) {
-                    // existing normal function call parse...
                     expr = finishCall(expr);
+                } else if (match(TokenType.LEFT_BRACKET)) {
+                    Token bracket = previous();                 // the '[' token
+                    Expr index = expression();
+                    consume(TokenType.RIGHT_BRACKET, "Expect ']' after index.");
+                    expr = new Index(expr, index, bracket);     // <-- correct AST node + token
                 } else if (match(TokenType.DOT)) {
                     Token method = consume(TokenType.IDENTIFIER, "Expect method name after '.'.");
                     consume(TokenType.LEFT_PAREN, "Expect '(' after method name.");
+
                     List<Expr> args = new ArrayList<>();
                     if (!check(TokenType.RIGHT_PAREN)) {
                         do {
@@ -1129,6 +1134,7 @@ public class ElaraScript {
                         } while (match(TokenType.COMMA));
                     }
                     consume(TokenType.RIGHT_PAREN, "Expect ')' after arguments.");
+
                     expr = new MethodCallExpr(expr, method, args);
                 } else {
                     break;
