@@ -31,7 +31,7 @@ public class ElaraScript {
 
     /** Public value type used by host code. */
     public static final class Value {
-        public enum Type { NUMBER, BOOL, STRING, BYTES, ARRAY, MATRIX, MAP, NULL }
+        public enum Type { NUMBER, BOOL, STRING, FUNC, BYTES, ARRAY, MATRIX, MAP, NULL }
 
         private final Type type;
         private final Object value;
@@ -41,6 +41,7 @@ public class ElaraScript {
             this.value = value;
         }
 
+        public static Value func(String s) { return new Value(Type.FUNC, s); }
         public static Value number(double d) { return new Value(Type.NUMBER, d); }
         public static Value bool(boolean b) { return new Value(Type.BOOL, b); }
         public static Value string(String s) { return new Value(Type.STRING, s); }
@@ -57,6 +58,11 @@ public class ElaraScript {
         public static Value nil() { return new Value(Type.NULL, null); }
 
         public Type getType() { return type; }
+        
+        public String asFunc() {
+            if (type != Type.FUNC) throw new RuntimeException("Expected function, got " + type);
+            return (String) value;
+        }
 
         public double asNumber() {
             if (type != Type.NUMBER) throw new RuntimeException("Expected number, got " + type);
@@ -69,7 +75,9 @@ public class ElaraScript {
         }
 
         public String asString() {
-            if (type != Type.STRING) throw new RuntimeException("Expected string, got " + type);
+            if (type != Type.STRING && type != Type.FUNC) {
+                throw new RuntimeException("Expected string, got " + type);
+            }
             return (String) value;
         }
 
@@ -106,6 +114,8 @@ public class ElaraScript {
                     return Boolean.toString(asBool());
                 case STRING:
                     return '"' + asString() + '"';
+                case FUNC:
+            		return '"' + asString() + '"';
                 case BYTES:
                     byte[] bb = (byte[]) value;
                     return (bb == null) ? "bytes(null)" : ("bytes(" + bb.length + ")");
@@ -139,6 +149,7 @@ public class ElaraScript {
                 case NUMBER: return ElaraDataShaper.Type.NUMBER;
                 case BOOL:   return ElaraDataShaper.Type.BOOL;
                 case STRING: return ElaraDataShaper.Type.STRING;
+                case FUNC:   return ElaraDataShaper.Type.STRING;
                 case BYTES:  return ElaraDataShaper.Type.BYTES;
                 case ARRAY:  return ElaraDataShaper.Type.ARRAY;
                 case MATRIX: return ElaraDataShaper.Type.MATRIX;
@@ -1255,14 +1266,24 @@ public class ElaraScript {
             TokenType op = expr.operator.type;
 
             switch (op) {
-                case PLUS:
-                    if (left.getType() == Value.Type.NUMBER && right.getType() == Value.Type.NUMBER) {
-                        return Value.number(left.asNumber() + right.asNumber());
-                    }
-                    if (left.getType() == Value.Type.STRING || right.getType() == Value.Type.STRING) {
-                        return Value.string(stringify(left) + stringify(right));
-                    }
-                    throw new RuntimeException("Unsupported operand types for '+': " + left.getType() + ", " + right.getType());
+	            case PLUS: {
+	                // 1) numbers
+	                if (left.getType() == Value.Type.NUMBER && right.getType() == Value.Type.NUMBER) {
+	                    return Value.number(left.asNumber() + right.asNumber());
+	                }
+	
+	                // 2) FUNC is NOT concat-able (even with a STRING)
+	                if (left.getType() == Value.Type.FUNC || right.getType() == Value.Type.FUNC) {
+	                    throw new RuntimeException("Unsupported operand types for '+': " + left.getType() + ", " + right.getType());
+	                }
+	
+	                // 3) string concatenation (STRING only)
+	                if (left.getType() == Value.Type.STRING || right.getType() == Value.Type.STRING) {
+	                    return Value.string(stringify(left) + stringify(right));
+	                }
+	
+	                throw new RuntimeException("Unsupported operand types for '+': " + left.getType() + ", " + right.getType());
+	            }
                 case MINUS:
                     requireNumber(left, right, expr.operator);
                     return Value.number(left.asNumber() - right.asNumber());
@@ -1328,13 +1349,21 @@ public class ElaraScript {
         }
 
         public Value visitVariableExpr(Variable expr) {
-            try {
-                return env.get(expr.name.lexeme);
-            } catch (RuntimeException e) {
-                // Surface missing variables as system errors (host can forward to logcat).
-                reportSystemError("var_not_found", expr.name.lexeme, expr.name, e.getMessage());
-                throw e;
+            String name = expr.name.lexeme;
+
+            // 1) Normal variable lookup first (variables shadow functions)
+            if (env.exists(name)) {
+                return env.get(name);
             }
+
+            // 2) If no variable, but a function exists with that name, return FUNC
+            if (userFunctions.containsKey(name) || functions.containsKey(name)) {
+                return Value.func(name);
+            }
+
+            // 3) Otherwise: real missing variable
+            reportSystemError("var_not_found", name, expr.name, "Undefined variable: " + name);
+            throw new RuntimeException("Undefined variable: " + name);
         }
 
         public Value visitAssignExpr(Assign expr) {
@@ -1576,6 +1605,7 @@ public class ElaraScript {
                 case BOOL: return v.asBool();
                 case NUMBER: return v.asNumber() != 0.0;
                 case STRING: return !v.asString().isEmpty();
+                case FUNC:   return !v.asString().isEmpty();
                 case BYTES: {
                     byte[] bb = v.asBytes();
                     return bb != null && bb.length != 0;
@@ -1594,11 +1624,16 @@ public class ElaraScript {
             if (a.getType() == Value.Type.NULL && b.getType() == Value.Type.NULL) return true;
             if (a.getType() == Value.Type.NULL || b.getType() == Value.Type.NULL) return false;
             if (a.getType() != b.getType()) return false;
+            
+            boolean aStrish = (a.getType() == Value.Type.STRING || a.getType() == Value.Type.FUNC);
+            boolean bStrish = (b.getType() == Value.Type.STRING || b.getType() == Value.Type.FUNC);
+            if (aStrish && bStrish) {
+                return a.asString().equals(b.asString());
+            }
 
             switch (a.getType()) {
                 case NUMBER: return a.asNumber() == b.asNumber();
                 case BOOL: return a.asBool() == b.asBool();
-                case STRING: return a.asString().equals(b.asString());
                 case BYTES: {
                     byte[] ab = a.asBytes();
                     byte[] bb = b.asBytes();
@@ -1627,6 +1662,7 @@ public class ElaraScript {
             if (v.getType() == Value.Type.NULL) return "null";
             switch (v.getType()) {
                 case STRING: return v.asString();
+                case FUNC:   return v.asString();
                 default: return v.toString();
             }
         }
@@ -1834,20 +1870,37 @@ public class ElaraScript {
         return run(source, initialEnv);
     }
 
-
     private Map<String, Value> runInternal(String source, Environment env) {
-        Lexer lexer = new Lexer(source);
-        List<Token> tokens = lexer.tokenize();
-        Parser parser = new Parser(tokens);
-        List<Stmt> program = parser.parse();
-        Interpreter interpreter = new Interpreter(env, functions, dataShaping, maxCallDepth, mode, this::onInterpreterError);
+        Interpreter interpreter = null;
         try {
+            Lexer lexer = new Lexer(source);
+            List<Token> tokens = lexer.tokenize();
+            Parser parser = new Parser(tokens);
+            List<Stmt> program = parser.parse();
+
+            interpreter = new Interpreter(env, functions, dataShaping, maxCallDepth, mode, this::onInterpreterError);
             interpreter.execute(program);
+
+            return env.snapshot();
         } catch (RuntimeException e) {
-            // Surface interpreter exceptions through the registered callback when possible.
-            onInterpreterError(e, interpreter, "exception", null, null, (e.getMessage() == null) ? e.toString() : e.getMessage());
+            // Route everything (lex/parse/runtime) through the same error policy.
+            onInterpreterError(
+                    e,
+                    interpreter, // may be null if lex/parse failed
+                    "exception",
+                    null,
+                    null,
+                    (e.getMessage() == null) ? e.toString() : e.getMessage()
+            );
+
+            // If callback is set, suppress, always.
+            if (errorCallbackFn != null) {
+                return env.snapshot();
+            }
+
+            // No callback: throw to host (JUnit)
+            throw e;
         }
-        return env.snapshot();
     }
 
     public static final class EntryRunResult {
@@ -1895,26 +1948,25 @@ public class ElaraScript {
         }
 
         Environment env = (initialEnv == null) ? new Environment() : new Environment(initialEnv);
-
-        Lexer lexer = new Lexer(source);
-        List<Token> tokens = lexer.tokenize();
-        Parser parser = new Parser(tokens);
-        List<Stmt> program = parser.parse();
-
-        Interpreter interpreter = new Interpreter(env, functions, dataShaping, maxCallDepth, mode, this::onInterpreterError);
+        Interpreter interpreter = null;
 
         try {
-            // 1) Run globals: defines functions + executes any top-level statements.
+            Lexer lexer = new Lexer(source);
+            List<Token> tokens = lexer.tokenize();
+            Parser parser = new Parser(tokens);
+            List<Stmt> program = parser.parse();
+
+            interpreter = new Interpreter(env, functions, dataShaping, maxCallDepth, mode, this::onInterpreterError);
+
+            // 1) globals
             interpreter.execute(program);
 
-            // 2) Invoke entry function.
+            // 2) entry call
             List<Value> args = (entryArgs == null) ? Collections.emptyList() : entryArgs;
             Value out = interpreter.invokeForHost(entryFunctionName, args);
 
-            // 3) Return entry value + full env snapshot after invocation.
             return new EntryRunResult(env.snapshot(), out);
         } catch (RuntimeException e) {
-            // Surface through error callback when possible
             onInterpreterError(
                     e,
                     interpreter,
@@ -1924,12 +1976,11 @@ public class ElaraScript {
                     (e.getMessage() == null) ? e.toString() : e.getMessage()
             );
 
-            // [OK] If callback is set, suppress
+            // callback set => suppress (always)
             if (errorCallbackFn != null) {
                 return new EntryRunResult(env.snapshot(), Value.nil());
             }
 
-            // [OK] Only throw if callback is NOT set
             throw e;
         }
     }
@@ -2078,15 +2129,16 @@ public class ElaraScript {
             Value v = args.get(0);
             String typeName;
             switch (v.getType()) {
-              case NUMBER:
-                typeName = "number";
-                break;
-              case BOOL:
-                typeName = "bool";
-                break;
-              default:
-                typeName = "unknown";
-                break;
+                case NUMBER: typeName = "number"; break;
+                case BOOL:   typeName = "bool"; break;
+                case STRING: typeName = "string"; break;
+                case FUNC:   typeName = "function"; break;
+                case BYTES:  typeName = "bytes"; break;
+                case ARRAY:  typeName = "array"; break;
+                case MATRIX: typeName = "matrix"; break;
+                case MAP:    typeName = "map"; break;
+                case NULL:   typeName = "null"; break;
+                default:     typeName = "unknown"; break;
             }
             return Value.string(typeName);
         });

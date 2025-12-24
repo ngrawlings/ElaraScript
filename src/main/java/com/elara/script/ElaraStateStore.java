@@ -186,6 +186,8 @@ public final class ElaraStateStore {
                     return v.asBool();
                 case STRING:
                     return v.asString();
+                case FUNC:
+                    return v.asString();
                 case ARRAY: {
                     List<Object> out = new ArrayList<>();
                     for (ElaraScript.Value item : v.asArray()) out.add(toPlainJava(item));
