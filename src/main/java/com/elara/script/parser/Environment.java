@@ -23,7 +23,15 @@ public class Environment {
      */
     public Environment() { 
     	this.parent = null; 
-    	this.instance_owner = null; 
+    	this.instance_owner = null;
+    }
+    
+    public Environment(Map<String, Value> initial) { 
+    	this.parent = null; 
+    	this.instance_owner = null;
+    	
+    	if (initial != null)
+        	this.vars.putAll(initial);
     }
     
     /*

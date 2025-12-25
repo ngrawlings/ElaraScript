@@ -179,7 +179,7 @@ public class ElaraScript {
 
     /** Global-program mode: run script with an initial environment. Returns final env snapshot. */
     public Map<String, Value> run(String source, Map<String, Value> initialEnv) {
-        Environment env = (initialEnv == null) ? new Environment() : new Environment(initialEnv);
+        Environment env = new Environment(initialEnv);
         return runInternal(source, env);
     }
 
@@ -255,7 +255,7 @@ public class ElaraScript {
             throw new IllegalArgumentException("entryFunctionName must not be empty");
         }
 
-        Environment env = (initialEnv == null) ? new Environment() : new Environment(initialEnv);
+        Environment env = new Environment(initialEnv);
         Interpreter interpreter = null;
 
         try {
