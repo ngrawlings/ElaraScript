@@ -31,6 +31,7 @@ public class ElaraScriptFreeTest {
         ElaraScript es = new ElaraScript();
 
         String src =
+                "setglobal(\"freed\", false);" +
                 "class Foo {\n" +
                 "  def constructor() {\n" +
                 "    // nothing\n" +

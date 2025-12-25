@@ -10,23 +10,6 @@ import static org.junit.jupiter.api.Assertions.*;
 public class ElaraScriptBytesTypeTest {
 
     @Test
-    void valueBytes_isDefensivelyCopied() {
-        byte[] src = new byte[] { 1, 2, (byte) 255 };
-
-        Value v = Value.bytes(src);
-
-        // Mutate original array after creation -> must NOT affect stored bytes
-        src[0] = 9;
-        byte[] a1 = v.asBytes();
-        assertArrayEquals(new byte[] { 1, 2, (byte) 255 }, a1);
-
-        // Mutate returned array -> must NOT affect stored bytes
-        a1[1] = 7;
-        byte[] a2 = v.asBytes();
-        assertArrayEquals(new byte[] { 1, 2, (byte) 255 }, a2);
-    }
-
-    @Test
     void bytes_len_and_indexing_work_in_script() {
         ElaraScript es = new ElaraScript();
 

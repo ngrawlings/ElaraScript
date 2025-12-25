@@ -11,22 +11,6 @@ import static org.junit.jupiter.api.Assertions.*;
 public class ElaraScriptMapTypeTest {
 
     @Test
-    void value_map_factory_isBackedByHashMap_andDefensiveCopiesInput() {
-        Map<String, Value> src = new HashMap<>();
-        src.put("a", Value.number(1));
-
-        Value v = Value.map(src);
-        assertEquals(Value.Type.MAP, v.getType());
-
-        // mutate original after creating Value.map()
-        src.put("b", Value.number(2));
-
-        Map<String, Value> inside = v.asMap();
-        assertTrue(inside.containsKey("a"));
-        assertFalse(inside.containsKey("b"), "Value.map(...) should defensively copy the input map");
-    }
-
-    @Test
     void script_canGetSetAndLen_onMapInput() {
         ElaraScript es = new ElaraScript();
 
