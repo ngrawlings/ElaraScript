@@ -1,59 +1,78 @@
 package com.elara.script.parser;
 
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Map.Entry;
 
-import com.elara.script.parser.Value.ClassInstance;
-
 public class Environment {
-	public static final Map<String, Value> global = new LinkedHashMap<>();
-	
-	public Map<String, Value> _this;
-	
-    public final Map<String, Value> vars = new LinkedHashMap<>();
-   
+    public static final Map<String, Value> global = new LinkedHashMap<>();
+
     public final Environment parent;
-    
-    public final ClassInstance instance_owner;
+    public final Value.ClassInstance instance_owner;
+
+    // LIFO of local scopes for THIS environment frame
+    private final Deque<Map<String, Value>> scopes = new ArrayDeque<>();
 
     /*
      * This is only called for root, if it is called after root is already created it is a bug.
-     * Due to the fact the engine is likely initialised for each event it may be called many times 
+     * Due to the fact the engine is likely initialised for each event it may be called many times
      * over the live cycle of the service. But only once per execution bucket.
      */
-    public Environment() { 
-    	this.parent = null; 
-    	this.instance_owner = null;
+    public Environment() {
+        this.parent = null;
+        this.instance_owner = null;
+        scopes.push(new LinkedHashMap<>()); // root scope
     }
     
     public Environment(Map<String, Value> initial) {
         this.parent = null;
         this.instance_owner = null;
-        if (initial != null) this.vars.putAll(initial);
+        scopes.push(new LinkedHashMap<>()); // root scope
+
+        if (initial != null) {
+            Map<String, Value> top = scopes.peek();
+            top.putAll(initial); // NO copying here (your new design)
+        }
     }
-    
-    public Environment(Map<String, Value> initial, java.util.Set<String> copyParams) { 
-    	this.parent = null; 
-    	this.instance_owner = null;
-    	
-    	if (initial != null) {
-    		this.vars.putAll(bindForChildFrame(initial, copyParams));
-    	}
-    }
-    
-    /*
-     * Generally this should not be called directly this is to be chained from the parent using childScope
-     */
-    private Environment(Environment parent, ClassInstance instance_owner, Map<String, Value> initial, java.util.Set<String> copyParams) {
+
+    private Environment(Environment parent, Value.ClassInstance instance_owner) {
         this.parent = parent;
         this.instance_owner = instance_owner;
-        
-        if (initial != null) {
-        	this.vars.putAll(bindForChildFrame(initial, copyParams));
-    	}
+        scopes.push(new LinkedHashMap<>()); // root scope for this frame
     }
     
+    public Environment(Map<String, Value> initial, java.util.Set<String> copyParams) {
+        this.parent = null;
+        this.instance_owner = null;
+        scopes.push(new LinkedHashMap<>());
+
+        if (initial != null) {
+            Map<String, Value> top = scopes.peek();
+            top.putAll(bindForChildFrame(initial, copyParams)); // uses your helper
+        }
+    }
+
+
+    // -------------------------
+    // Block-scoping (LIFO)
+    // -------------------------
+    public void pushBlock() {
+        scopes.push(new LinkedHashMap<>());
+    }
+
+    public void popBlock() {
+        if (scopes.size() <= 1) {
+            throw new RuntimeException("Cannot pop root scope of environment frame");
+        }
+        scopes.pop();
+    }
+
+    // -------------------------
+    // Optional helper (kept for later: name-based copy binding)
+    // We'll use/replace this with copyParams logic above it.
+    // -------------------------
     private static Map<String, Value> bindForChildFrame(
             Map<String, Value> initial,
             java.util.Set<String> copyParams
@@ -71,61 +90,141 @@ public class Environment {
         return out;
     }
 
-    public void define(String name, Value value) {
-        if (vars.containsKey(name)) {
-            throw new RuntimeException("Variable already defined: " + name);
-        }
-        vars.put(name, value);
+    private Map<String, Value> thisMap() {
+        return (instance_owner == null) ? null : instance_owner._this;
     }
 
-    public void assign(String name, Value value) {
-        if (vars.containsKey(name)) {
-            vars.put(name, value);
-        } else if (parent != null) {
-            parent.assign(name, value);
-        } else {
-            throw new RuntimeException("Undefined variable: " + name);
+    private Map<String, Value> topScope() {
+        Map<String, Value> top = scopes.peek();
+        if (top == null) throw new RuntimeException("Environment scope stack is empty (bug)");
+        return top;
+    }
+
+    // -------------------------
+    // Vars API
+    // -------------------------
+    public void define(String name, Value value) {
+        Map<String, Value> top = topScope();
+        if (top.containsKey(name)) {
+            throw new RuntimeException("Variable already defined: " + name);
         }
+        top.put(name, value);
     }
 
     public Value get(String name) {
-        if (vars.containsKey(name)) {
-            return vars.get(name);
+        // nearest scope in this env frame
+        for (Map<String, Value> s : scopes) {
+            if (s.containsKey(name)) return s.get(name);
         }
-        if (parent != null) return parent.get(name);
+
+        // parent chain (function closures etc)
+        if (parent != null && parent.exists(name)) {
+            return parent.get(name);
+        }
+
+        // this
+        Map<String, Value> t = thisMap();
+        if (t != null && t.containsKey(name)) {
+            return t.get(name);
+        }
+
+        // global
+        if (global.containsKey(name)) return global.get(name);
+
         throw new RuntimeException("Undefined variable: " + name);
     }
 
     public boolean exists(String name) {
-        if (vars.containsKey(name)) return true;
-        return parent != null && parent.exists(name);
+        for (Map<String, Value> s : scopes) {
+            if (s.containsKey(name)) return true;
+        }
+        if (parent != null && parent.exists(name)) return true;
+
+        Map<String, Value> t = thisMap();
+        if (t != null && t.containsKey(name)) return true;
+
+        return global.containsKey(name);
     }
 
-    /*
-     * If a call is being made to a function instance_owner much be null.
-     * If it is being made to a class method, instance_owner must be set to the receiving class instance
-     * This is true for this.method calls as even though it is set it will receive the same instance due 
-     * to it receive it from "this"
-     */
-    public Environment childScope(ClassInstance instance_owner, Map<String, Value> initial, java.util.Set<String> copyParams) {
-        return new Environment(this, instance_owner, initial, copyParams);
-    }
+    public void assign(String name, Value value) {
+        for (Map<String, Value> s : scopes) {
+            if (s.containsKey(name)) {
+                s.put(name, value);
+                return;
+            }
+        }
 
-    public Map<String, Value> snapshot() {
-        Map<String, Value> out = (parent != null) ? parent.snapshot() : new LinkedHashMap<String, Value>();
-        out.putAll(vars);
-        return out;
-    }
-    
-    public void remove(String name) {
-        if (vars.containsKey(name)) {
-            vars.remove(name);
+        if (parent != null && parent.exists(name)) {
+            parent.assign(name, value);
             return;
         }
-        if (parent != null) {
+
+        Map<String, Value> t = thisMap();
+        if (t != null && t.containsKey(name)) {
+            t.put(name, value);
+            return;
+        }
+
+        if (global.containsKey(name)) {
+            global.put(name, value);
+            return;
+        }
+
+        throw new RuntimeException("Undefined variable: " + name);
+    }
+
+    public void remove(String name) {
+        for (Map<String, Value> s : scopes) {
+            if (s.containsKey(name)) {
+                s.remove(name);
+                return;
+            }
+        }
+
+        if (parent != null && parent.exists(name)) {
             parent.remove(name);
             return;
         }
-        // if you prefer: ignore missing vs throw
+
+        Map<String, Value> t = thisMap();
+        if (t != null && t.containsKey(name)) {
+            t.remove(name);
+            return;
+        }
+
+        if (global.containsKey(name)) {
+            global.remove(name);
+        }
+    }
+
+    public Map<String, Value> snapshot() {
+        Map<String, Value> out = (parent != null) ? parent.snapshot() : new LinkedHashMap<>();
+
+        // only root includes global in snapshot
+        if (parent == null) out.putAll(global);
+
+        Map<String, Value> t = thisMap();
+        if (t != null) out.putAll(t);
+
+        // apply scopes from oldest -> newest so "nearest" wins
+        // (descendingIterator gives bottom->top for ArrayDeque)
+        for (java.util.Iterator<Map<String, Value>> it = scopes.descendingIterator(); it.hasNext(); ) {
+            out.putAll(it.next());
+        }
+
+        return out;
+    }
+
+    /*
+     * If a call is being made to a function instance_owner must be null.
+     * If it is being made to a class method, instance_owner must be set to the receiving class instance.
+     */
+    public Environment childScope(Value.ClassInstance instance_owner) {
+        return new Environment(this, instance_owner);
+    }
+    
+    public boolean existsInCurrentScope(String name) {
+        Map<String, Value> top = scopes.peek();
+        return top != null && top.containsKey(name);
     }
 }

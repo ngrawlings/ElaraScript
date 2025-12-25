@@ -28,7 +28,7 @@ public class UserFunction {
         // IMPORTANT:
         // New call frame should be a child of the function's closure (lexical scoping),
         // not a child of the caller's environment.
-        interpreter.env = closure.childScope(null, null, null);
+        interpreter.env = closure.childScope(null);
 
         try {
             for (int i = 0; i < params.size(); i++) {
@@ -67,7 +67,7 @@ public class UserFunction {
         Environment previous = interpreter.env;
 
         // Method call frame: child of closure, but instance_owner set.
-        interpreter.env = closure.childScope(thisValue.asClassInstance(), null, null);
+        interpreter.env = closure.childScope(thisValue.asClassInstance());
 
         try {
             // Inject `this` FIRST

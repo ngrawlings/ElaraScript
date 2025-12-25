@@ -3,6 +3,8 @@ import org.junit.jupiter.api.Test;
 import com.elara.script.ElaraScript;
 import com.elara.script.parser.Value;
 
+import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -168,4 +170,48 @@ public class ElaraScriptTest {
 
         assertEquals(6.0, env.get("out").asNumber(), 1e-9);
     }
+    
+    @Test
+    public void deepCopyDecorator_copyVsNoCopy_arrayMutation() {
+
+        String src =
+            "function push99(a) {\n" +
+            "  a[len(a)] = 99;\n" +
+            "  return a;\n" +
+            "}\n" +
+            "\n" +
+            "function main() {\n" +
+            "  let x = [1,2,3];\n" +
+            "  push99(x);\n" +
+            "\n" +
+            "  let y = [1,2,3];\n" +
+            "  push99(&y);\n" +
+            "\n" +
+            "  return [x, y];\n" +
+            "}\n";
+
+        ElaraScript es = new ElaraScript();
+
+        // IMPORTANT: call entrypoint, don't assign to undeclared globals
+        Value out = es.run(src, "main", Collections.emptyList());
+
+        assertNotNull(out);
+        assertEquals(Value.Type.ARRAY, out.getType());
+
+        List<Value> top = out.asArray();
+        assertEquals(2, top.size());
+
+        // x mutated in parent (no copy)
+        List<Value> x = top.get(0).asArray();
+        assertEquals(4, x.size());
+        assertEquals(99, (int) x.get(3).asNumber());
+
+        // y NOT mutated in parent (copy)
+        List<Value> y = top.get(1).asArray();
+        assertEquals(3, y.size());
+        assertEquals(1, (int) y.get(0).asNumber());
+        assertEquals(2, (int) y.get(1).asNumber());
+        assertEquals(3, (int) y.get(2).asNumber());
+    }
+
 }

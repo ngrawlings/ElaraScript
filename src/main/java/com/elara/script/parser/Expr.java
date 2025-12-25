@@ -25,6 +25,9 @@ public class Expr {
         // NOTE: you declared these names in the visitor, so Expr must provide matching node types
         R visitIndexExpr(IndexExpr expr);
         R visitSetIndexExpr(SetIndexExpr expr);
+        
+        R visitGetExpr(GetExpr expr);
+        R visitSetExpr(SetExpr expr);
     }
 
     // -------------------------
@@ -286,4 +289,37 @@ public class Expr {
             return visitor.visitSetIndexExpr(this);
         }
     }
+    
+
+	public static final class GetExpr implements ExprInterface {
+	    public final ExprInterface receiver;
+	    public final Token name;
+	
+	    public GetExpr(ExprInterface receiver, Token name) {
+	        this.receiver = receiver;
+	        this.name = name;
+	    }
+	
+	    @Override
+	    public <R> R accept(ExprVisitor<R> visitor) {
+	        return visitor.visitGetExpr(this);
+	    }
+	}
+	
+	public static final class SetExpr implements ExprInterface {
+	    public final ExprInterface receiver;
+	    public final Token name;
+	    public final ExprInterface value;
+	
+	    public SetExpr(ExprInterface receiver, Token name, ExprInterface value) {
+	        this.receiver = receiver;
+	        this.name = name;
+	        this.value = value;
+	    }
+	
+	    @Override
+	    public <R> R accept(ExprVisitor<R> visitor) {
+	        return visitor.visitSetExpr(this);
+	    }
+	}
 }

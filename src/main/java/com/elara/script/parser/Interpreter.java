@@ -182,13 +182,11 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
     }
 
     public void visitBlockStmt(Block stmt) {
-        Environment previous = this.env;
-        this.env = env.childScope(previous.instance_owner, previous.vars, null);
-
+        env.pushBlock();
         try {
             for (Stmt s : stmt.statements) s.accept(this);
         } finally {
-            this.env = previous;
+            env.popBlock();
         }
     }
 
@@ -544,7 +542,9 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
 
             try {
                 // IMPORTANT: catch *everything* from inside the invocation path
-                Value out = invokeByName(targetName, rest);
+            	List<Boolean> restCopy = (copyFlags.size() <= 1) ? Collections.emptyList() : copyFlags.subList(1, copyFlags.size());
+            	Value out = invokeByNameWithCopyFlags(targetName, rest, restCopy);
+
                 return makeTryCallResult(true, out, Collections.emptyList());
             } catch (RuntimeException e) {
                 String msg = (e.getMessage() == null) ? e.toString() : e.getMessage();
@@ -572,8 +572,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
 
             Environment g = env;
             while (g.parent != null) g = g.parent;          // walk to root env
-            Value out = g.vars.get(v.asString());           // root lookup only
-            return (out == null) ? Value.nil() : out;
+            return g.existsInCurrentScope(v.asString()) ? Value.nil() : g.get(v.asString());
         }
 
         // setglobal("varName", value) -> value
@@ -585,7 +584,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
 
             Environment g = env;
             while (g.parent != null) g = g.parent;          // walk to root env
-            g.vars.put(k.asString(), val);                  // overwrite/create at root
+            g.assign(k.asString(), val);                  // overwrite/create at root
             return val;
         }
 
@@ -610,7 +609,8 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
 
             callStack.push(new CallFrame("call->" + targetName, new ArrayList<>(rest)));
             try {
-                return invokeByName(targetName, rest);
+            	List<Boolean> restCopy = (copyFlags.size() <= 1) ? Collections.emptyList() : copyFlags.subList(1, copyFlags.size());
+            	return invokeByNameWithCopyFlags(targetName, rest, restCopy);
             } finally {
                 callStack.pop();
             }
@@ -621,7 +621,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
         if (uf != null) {
             callStack.push(new CallFrame(name, args));
             try {
-                return uf.call(this, args);
+            	return uf.call(this, args, copyFlags);
             } finally {
                 callStack.pop();
             }
@@ -631,7 +631,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
         if (fn != null) {
             callStack.push(new CallFrame(name, args));
             try {
-                return fn.call(args);
+            	return invokeByNameWithCopyFlags(name, args, copyFlags);
             } finally {
                 callStack.pop();
             }
@@ -644,7 +644,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
                 String targetName = possible.asString();
                 callStack.push(new CallFrame(name + "->" + targetName, args));
                 try {
-                    return invokeByName(targetName, args);
+                	return invokeByNameWithCopyFlags(targetName, args, copyFlags);
                 } finally {
                     callStack.pop();
                 }
@@ -776,11 +776,19 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
         Object fnObj = desc.methods.get(expr.method.lexeme);
 
         if (fnObj instanceof NativeMethod) {
-            return ((NativeMethod) fnObj).call(this, recv, args);
+            // Native has no param-binding stage, so apply copy flags here
+            List<Value> cooked = new ArrayList<>(args.size());
+            for (int i = 0; i < args.size(); i++) {
+                boolean c = (copyFlags != null && i < copyFlags.size()) && copyFlags.get(i);
+                Value v = args.get(i);
+                cooked.add(v == null ? null : v.getForChildStackFrame(c));
+            }
+            return ((NativeMethod) fnObj).call(this, recv, cooked);
         }
 
         if (fnObj instanceof UserFunction) {
-            return ((UserFunction) fnObj).callWithThis(this, recv, args);
+            // UserFunction will apply copyFlags during param binding
+            return ((UserFunction) fnObj).callWithThis(this, recv, args, copyFlags);
         }
 
         throw new RuntimeException("Unknown method: " + inst.className + "." + expr.method.lexeme);
@@ -794,16 +802,12 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
         return fn.callWithThis(this, thisValue, args, copyFlags);
     }
 
+    public Value invokeByName(String targetName, List<Value> args, List<Boolean> copyFlags) {
+        return invokeByNameWithCopyFlags(targetName, args, copyFlags);
+    }
+    
     public Value invokeByName(String targetName, List<Value> args) {
-        UserFunction uf = userFunctions.get(targetName);
-        if (uf != null) {
-            return uf.call(this, args);
-        }
-        BuiltinFunction bf = functions.get(targetName);
-        if (bf != null) {
-            return bf.call(args);
-        }            reportSystemError("fn_not_found", targetName, null, "Unknown function: " + targetName);
-        throw new RuntimeException("Unknown function: " + targetName);
+        return invokeByNameWithCopyFlags(targetName, args, null);
     }
 
     public Value visitIndexExpr(IndexExpr expr) {
@@ -995,6 +999,93 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
 	    String key = inst.stateKey(); // class.uuid
 	    // IMPORTANT: you can't currently delete from env via API, so add a method:
 	    env.remove(key);  // implement below
+	}
+	
+	@Override
+	public Value visitGetExpr(Expr.GetExpr expr) {
+	    Value recv = eval(expr.receiver);
+	    return objectGet(recv, expr.name); // funnels into stateKey map
+	}
+
+	@Override
+	public Value visitSetExpr(Expr.SetExpr expr) {
+	    Value recv = eval(expr.receiver);
+	    Value val  = eval(expr.value);
+	    objectSet(recv, expr.name, val);   // funnels into stateKey map
+	    return val;
+	}
+	
+	/*
+	 * IMPORTANT NOTE
+	 * Getting of any class member variable should end up here
+	 */
+	private Value objectGet(Value recv, Token name) {
+	    // Only class instances support '.' property access in this VM
+	    if (recv.getType() != Value.Type.CLASS_INSTANCE) {
+	        throw new RuntimeException("Only class instances support '.' access.");
+	    }
+	    return getInstanceField(recv, name);
+	}
+
+	/*
+	 * IMPORTANT NOTE
+	 * Setting of any class member variable should end up here
+	 */
+	private Value objectSet(Value recv, Token name, Value value) {
+	    if (recv.getType() != Value.Type.CLASS_INSTANCE) {
+	        throw new RuntimeException("Only class instances support '.' assignment.");
+	    }
+	    return setInstanceField(recv, name, value);
+	}
+	
+	@SuppressWarnings("unchecked")
+	private Map<String, Value> requireInstanceStateMap(Value.ClassInstance inst) {
+	    String key = inst.stateKey();
+
+	    // Ensure state exists and is a map
+	    if (!env.exists(key)) {
+	        LinkedHashMap<String, Value> fresh = new LinkedHashMap<>();
+	        env.define(key, Value.map(fresh));
+	    }
+
+	    Value st = env.get(key);
+	    if (st.getType() != Value.Type.MAP) {
+	        throw new RuntimeException("Instance state is not a map for: " + key + " (got " + st.getType() + ")");
+	    }
+
+	    Map<String, Value> m = st.asMap();
+	    if (m == null) {
+	        // env contains map(null) which is invalid for instance state
+	        LinkedHashMap<String, Value> fresh = new LinkedHashMap<>();
+	        env.assign(key, Value.map(fresh));
+	        return fresh;
+	    }
+
+	    return m;
+	}
+
+	private Value getInstanceField(Value recv, Token field) {
+	    if (recv.getType() != Value.Type.CLASS_INSTANCE) {
+	        throw new RuntimeException("Field access requires class instance, got " + recv.getType());
+	    }
+
+	    Value.ClassInstance inst = recv.asClassInstance();
+	    Map<String, Value> state = requireInstanceStateMap(inst);
+
+	    Value v = state.get(field.lexeme);
+	    return (v == null) ? Value.nil() : v;
+	}
+
+	private Value setInstanceField(Value recv, Token field, Value value) {
+	    if (recv.getType() != Value.Type.CLASS_INSTANCE) {
+	        throw new RuntimeException("Field set requires class instance, got " + recv.getType());
+	    }
+
+	    Value.ClassInstance inst = recv.asClassInstance();
+	    Map<String, Value> state = requireInstanceStateMap(inst);
+
+	    state.put(field.lexeme, (value == null) ? Value.nil() : value);
+	    return (value == null) ? Value.nil() : value;
 	}
 
 }

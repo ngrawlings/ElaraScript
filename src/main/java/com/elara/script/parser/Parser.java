@@ -6,7 +6,9 @@ import java.util.List;
 import com.elara.script.parser.Expr.Assign;
 import com.elara.script.parser.Expr.Binary;
 import com.elara.script.parser.Expr.CallArg;
+import com.elara.script.parser.Expr.GetExpr;
 import com.elara.script.parser.Expr.Index;
+import com.elara.script.parser.Expr.IndexExpr;
 import com.elara.script.parser.Expr.Literal;
 import com.elara.script.parser.Expr.Binary;
 import com.elara.script.parser.Expr.Variable;
@@ -281,6 +283,14 @@ public class Parser {
                 Token name = ((Variable) expr).name;
                 return new Assign(name, value);
             }
+            if (expr instanceof GetExpr) {
+                Expr.GetExpr g = (Expr.GetExpr) expr;
+                return new Expr.SetExpr(g.receiver, g.name, value);
+            }
+            if (expr instanceof IndexExpr) {
+                Expr.IndexExpr ix = (Expr.IndexExpr) expr;
+                return new Expr.SetIndexExpr(ix.target, ix.index, value, ix.bracket);
+            }
             if (expr instanceof Index) {
                 Index ix = (Index) expr;
                 return new SetIndex(ix.target, ix.index, value, ix.bracket);
@@ -371,18 +381,23 @@ public class Parser {
                 consume(TokenType.RIGHT_BRACKET, "Expect ']' after index.");
                 expr = new Index(expr, index, bracket);
             } else if (match(TokenType.DOT)) {
-                Token method = consume(TokenType.IDENTIFIER, "Expect method name after '.'.");
-                consume(TokenType.LEFT_PAREN, "Expect '(' after method name.");
+                Token name = consume(TokenType.IDENTIFIER, "Expect property/method name after '.'.");
 
-                List<CallArg> args = new ArrayList<>();
-                if (!check(TokenType.RIGHT_PAREN)) {
-                    do {
-                        args.add(parseCallArg());
-                    } while (match(TokenType.COMMA));
+                // If next token is '(' => method call
+                if (match(TokenType.LEFT_PAREN)) {
+                    List<CallArg> args = new ArrayList<>();
+                    if (!check(TokenType.RIGHT_PAREN)) {
+                        do {
+                            args.add(parseCallArg());
+                        } while (match(TokenType.COMMA));
+                    }
+                    consume(TokenType.RIGHT_PAREN, "Expect ')' after arguments.");
+
+                    expr = new MethodCallExpr(expr, name, args);
+                } else {
+                    // Otherwise => property get (obj.field)
+                    expr = new Expr.GetExpr(expr, name); // add GetExpr node to Expr.java
                 }
-                consume(TokenType.RIGHT_PAREN, "Expect ')' after arguments.");
-
-                expr = new MethodCallExpr(expr, method, args);
             } else {
                 break;
             }
