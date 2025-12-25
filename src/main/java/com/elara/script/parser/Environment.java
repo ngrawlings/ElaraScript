@@ -2,6 +2,7 @@ package com.elara.script.parser;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Map.Entry;
 
 import com.elara.script.parser.Value.ClassInstance;
 
@@ -18,7 +19,7 @@ public class Environment {
 
     /*
      * This is only called for root, if it is called after root is already created it is a bug.
-     * Due to the fact the engine is likely initialized for each event it may be called many times 
+     * Due to the fact the engine is likely initialised for each event it may be called many times 
      * over the live cycle of the service. But only once per execution bucket.
      */
     public Environment() { 
@@ -26,30 +27,48 @@ public class Environment {
     	this.instance_owner = null;
     }
     
-    public Environment(Map<String, Value> initial) { 
+    public Environment(Map<String, Value> initial) {
+        this.parent = null;
+        this.instance_owner = null;
+        if (initial != null) this.vars.putAll(initial);
+    }
+    
+    public Environment(Map<String, Value> initial, java.util.Set<String> copyParams) { 
     	this.parent = null; 
     	this.instance_owner = null;
     	
-    	if (initial != null)
-        	this.vars.putAll(initial);
+    	if (initial != null) {
+    		this.vars.putAll(bindForChildFrame(initial, copyParams));
+    	}
     }
     
     /*
      * Generally this should not be called directly this is to be chained from the parent using childScope
      */
-    private Environment(Environment parent, ClassInstance instance_owner, Map<String, Value> initial) {
-        this.parent = null;
+    private Environment(Environment parent, ClassInstance instance_owner, Map<String, Value> initial, java.util.Set<String> copyParams) {
+        this.parent = parent;
         this.instance_owner = instance_owner;
         
-        if (initial != null)
-        	this.vars.putAll(initial);
+        if (initial != null) {
+        	this.vars.putAll(bindForChildFrame(initial, copyParams));
+    	}
     }
     
-    /* 
-     * receives the this object saved in the ClASS INSTANCE TYPE
-     */
-    public void setThis(Map<String, Value> _this) {
-    	this._this = _this;
+    private static Map<String, Value> bindForChildFrame(
+            Map<String, Value> initial,
+            java.util.Set<String> copyParams
+    ) {
+        Map<String, Value> out = new LinkedHashMap<>();
+        if (initial == null) return out;
+
+        for (Entry<String, Value> e : initial.entrySet()) {
+            String k = e.getKey();
+            Value v = e.getValue();
+
+            boolean doCopy = (copyParams != null && copyParams.contains(k));
+            out.put(k, v == null ? null : v.getForChildStackFrame(doCopy));
+        }
+        return out;
     }
 
     public void define(String name, Value value) {
@@ -88,8 +107,8 @@ public class Environment {
      * This is true for this.method calls as even though it is set it will receive the same instance due 
      * to it receive it from "this"
      */
-    public Environment childScope(ClassInstance instance_owner, Map<String, Value> initial) {
-        return new Environment(this, instance_owner, initial);
+    public Environment childScope(ClassInstance instance_owner, Map<String, Value> initial, java.util.Set<String> copyParams) {
+        return new Environment(this, instance_owner, initial, copyParams);
     }
 
     public Map<String, Value> snapshot() {

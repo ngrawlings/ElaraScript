@@ -82,7 +82,7 @@ public class Lexer {
             case '>': addToken(match('=') ? TokenType.GREATER_EQUAL : TokenType.GREATER); break;
             case '&':
                 if (match('&')) addToken(TokenType.AND_AND);
-                else throw error("Unexpected '&'");
+                else addToken(TokenType.AMP);
                 break;
             case '|':
                 if (match('|')) addToken(TokenType.OR_OR);

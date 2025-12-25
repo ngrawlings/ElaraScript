@@ -19,12 +19,14 @@ import com.elara.script.parser.Expr.Call;
 import com.elara.script.parser.Expr.CallArg;
 import com.elara.script.parser.Expr.ExprVisitor;
 import com.elara.script.parser.Expr.Index;
+import com.elara.script.parser.Expr.IndexExpr;
 import com.elara.script.parser.Expr.Literal;
 import com.elara.script.parser.Expr.Logical;
 import com.elara.script.parser.Expr.MapLiteral;
 import com.elara.script.parser.Expr.MethodCallExpr;
 import com.elara.script.parser.Expr.NewExpr;
 import com.elara.script.parser.Expr.SetIndex;
+import com.elara.script.parser.Expr.SetIndexExpr;
 import com.elara.script.parser.Expr.Unary;
 import com.elara.script.parser.Expr.Variable;
 import com.elara.script.parser.Statement.Block;
@@ -44,7 +46,7 @@ import com.elara.script.shaping.ElaraDataShaper;
 
 
 public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
-    private Environment env;
+    Environment env;
     private final Map<String, BuiltinFunction> functions;
     private final DataShapingRegistry shapingRegistry;
     private final Map<String, UserFunction> userFunctions = new LinkedHashMap<>();
@@ -78,7 +80,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
      *
      * Only the substring before the first '_' participates in validator lookup.
      */
-    private Value maybeValidateUserArg(String fnName, String paramLexeme, Value arg) {
+    public Value maybeValidateUserArg(String fnName, String paramLexeme, Value arg) {
         if (shapingRegistry == null || paramLexeme == null) return arg;
 
         String raw = paramLexeme;
@@ -181,7 +183,8 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
 
     public void visitBlockStmt(Block stmt) {
         Environment previous = this.env;
-        this.env = env.childScope(previous.instance_owner, previous.vars);
+        this.env = env.childScope(previous.instance_owner, previous.vars, null);
+
         try {
             for (Stmt s : stmt.statements) s.accept(this);
         } finally {
@@ -368,7 +371,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
         return value;
     }
 
-    public Value visitSetIndexExpr(SetIndex expr) {
+    public Value visitSetIndexExpr(SetIndexExpr expr) {
         Value target = eval(expr.target);
         Value idxV = eval(expr.index);
         Value value = eval(expr.value);
@@ -491,7 +494,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
         return new Value(Value.Type.CLASS_INSTANCE, inst);
     }
     
-    private Value tryReadTryCallField(Value.ClassInstance inst, String field) {
+    public Value tryReadTryCallField(Value.ClassInstance inst, String field) {
         // Look up state map: env["TryCallResult.<uuid>"]
         String key = inst.stateKey();
         Value st = env.exists(key) ? env.get(key) : Value.nil();
@@ -506,6 +509,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
     public Value visitCallExpr(Call expr) {
         if (!(expr.callee instanceof Variable)) throw new RuntimeException("Invalid function call target");
         String name = ((Variable) expr.callee).name.lexeme;
+        List<Boolean> copyFlags = new ArrayList<>();
 
         // Evaluate + expand args (spread operator: '**arrayExpr').
         List<Value> args = new ArrayList<Value>();
@@ -513,13 +517,17 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
             Value v = eval(a.expr);
             if (!a.spread) {
                 args.add(v);
+                copyFlags.add(a.copy);
                 continue;
             }
             if (v.getType() != Value.Type.ARRAY) {
                 String where = (a.spreadToken != null) ? (" at line " + a.spreadToken.line) : "";
                 throw new RuntimeException("Spread operator expects an array" + where);
             }
-            args.addAll(v.asArray());
+            for (Value item : v.asArray()) {
+                args.add(item);
+                copyFlags.add(a.copy); // '&' applies per-expanded element
+            }
         }
 
         if ("trycall".equals(name)) {
@@ -645,12 +653,62 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
         throw new RuntimeException("Unknown function: " + name);
     }
     
+    private Value invokeByNameWithCopyFlags(String name, List<Value> args, List<Boolean> copyFlags) {
+        // builtins:
+        if (functions.containsKey(name)) {
+            // builtins can ignore copy flags OR you can apply them here if you want:
+            // (I’d apply them here so builtins receive copied values consistently.)
+            List<Value> cooked = new ArrayList<>(args.size());
+            for (int i = 0; i < args.size(); i++) {
+                boolean c = (copyFlags != null && i < copyFlags.size()) && copyFlags.get(i);
+                Value v = args.get(i);
+                cooked.add(v == null ? null : v.getForChildStackFrame(c));
+            }
+            return functions.get(name).call(cooked);
+        }
+
+        // user function:
+        UserFunction uf = userFunctions.get(name);
+        if (uf != null) {
+            return uf.call(this, args, copyFlags);
+        }
+
+        throw new RuntimeException("Undefined function: " + name);
+    }
+    
     @Override
     public Value visitMethodCallExpr(MethodCallExpr expr) {
         Value recv = eval(expr.receiver);
         if (recv.getType() != Value.Type.CLASS_INSTANCE) {
             throw new RuntimeException("Only class instances support '.' method calls.");
         }
+        
+        // Evaluate + expand args (spread + & copy flags)
+        List<Value> args = new ArrayList<>();
+        List<Boolean> copyFlags = new ArrayList<>();
+
+        if (expr.arguments != null) {
+            for (CallArg a : expr.arguments) {
+                Value v = eval(a.expr);
+
+                if (!a.spread) {
+                    args.add(v);
+                    copyFlags.add(a.copy);
+                    continue;
+                }
+
+                if (v.getType() != Value.Type.ARRAY) {
+                    String where = (a.spreadToken != null) ? (" at line " + a.spreadToken.line) : "";
+                    throw new RuntimeException("Spread operator expects an array" + where);
+                }
+
+                for (Value item : v.asArray()) {
+                    args.add(item);
+                    copyFlags.add(a.copy); // spread + & means copy each expanded element
+                }
+            }
+        }
+
 
         Value.ClassInstance inst = recv.asClassInstance();
 
@@ -659,43 +717,50 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
             ensureTryCallResultClass();
         }
 
-        // --- SPECIAL META-METHOD: instance.trycall("methodName", ...args) ---
         if ("trycall".equals(expr.method.lexeme)) {
-            // args: ("methodName", ...actualArgs)
-            if (expr.args == null || expr.args.size() < 1) {
+            if (args.size() < 1) {
                 return makeTryCallResult(false, Value.nil(),
                         List.of("trycall(methodName, ...args) expects at least 1 argument"));
             }
 
-            Value methodNameV = eval(expr.args.get(0));
+            Value methodNameV = args.get(0);
             if (methodNameV.getType() != Value.Type.STRING) {
                 return makeTryCallResult(false, Value.nil(),
                         List.of("trycall first argument must be a string method name"));
             }
 
             String methodName = methodNameV.asString();
-
-            // evaluate remaining args
-            List<Value> callArgs = new ArrayList<>();
-            for (int i = 1; i < expr.args.size(); i++) {
-                callArgs.add(eval(expr.args.get(i)));
-            }
+            List<Value> callArgs = (args.size() == 1) ? Collections.emptyList() : args.subList(1, args.size());
+            List<Boolean> callCopy = (copyFlags.size() <= 1) ? Collections.emptyList() : copyFlags.subList(1, copyFlags.size());
 
             try {
-                Value.ClassInstance inst1 = recv.asClassInstance();
                 Value.ClassDescriptor desc = classes.get(inst.className);
                 if (desc == null) {
-                    return makeTryCallResult(false, Value.nil(), List.of("Unknown class: " + inst1.className));
+                    return makeTryCallResult(false, Value.nil(), List.of("Unknown class: " + inst.className));
                 }
 
                 Object fnObj = desc.methods.get(methodName);
-                if (!(fnObj instanceof UserFunction)) {
+                if (!(fnObj instanceof UserFunction) && !(fnObj instanceof NativeMethod)) {
                     return makeTryCallResult(false, Value.nil(),
-                            List.of("Unknown method: " + inst1.className + "." + methodName));
+                            List.of("Unknown method: " + inst.className + "." + methodName));
                 }
 
-                Value out = ((UserFunction) fnObj).callWithThis(this, recv, callArgs);
+                // Apply copy flags at call boundary (same contract as functions)
+                List<Value> cooked = new ArrayList<>(callArgs.size());
+                for (int i = 0; i < callArgs.size(); i++) {
+                    boolean c = (callCopy != null && i < callCopy.size()) && callCopy.get(i);
+                    Value v = callArgs.get(i);
+                    cooked.add(v == null ? null : v.getForChildStackFrame(c));
+                }
+
+                Value out;
+                if (fnObj instanceof NativeMethod) {
+                    out = ((NativeMethod) fnObj).call(this, recv, cooked);
+                } else {
+                    out = ((UserFunction) fnObj).callWithThis(this, recv, cooked /* and copyFlags if you add it */);
+                }
                 return makeTryCallResult(true, out, Collections.emptyList());
+
             } catch (RuntimeException e) {
                 String msg = (e.getMessage() == null) ? e.toString() : e.getMessage();
                 return makeTryCallResult(false, Value.nil(), List.of(msg));
@@ -710,10 +775,6 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
 
         Object fnObj = desc.methods.get(expr.method.lexeme);
 
-        // Evaluate args once
-        List<Value> args = new ArrayList<>();
-        for (Expr.ExprInterface a : expr.args) args.add(eval(a));
-
         if (fnObj instanceof NativeMethod) {
             return ((NativeMethod) fnObj).call(this, recv, args);
         }
@@ -725,11 +786,15 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
         throw new RuntimeException("Unknown method: " + inst.className + "." + expr.method.lexeme);
     }
 
-    private Value callMethodWithThis(UserFunction fn, Value thisValue, List<Value> args) {
+    public Value callMethodWithThis(UserFunction fn, Value thisValue, List<Value> args) {
         return fn.callWithThis(this, thisValue, args);
     }
+    
+    public Value callMethodWithThis(UserFunction fn, Value thisValue, List<Value> args, List<Boolean> copyFlags) {
+        return fn.callWithThis(this, thisValue, args, copyFlags);
+    }
 
-    private Value invokeByName(String targetName, List<Value> args) {
+    public Value invokeByName(String targetName, List<Value> args) {
         UserFunction uf = userFunctions.get(targetName);
         if (uf != null) {
             return uf.call(this, args);
@@ -741,7 +806,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
         throw new RuntimeException("Unknown function: " + targetName);
     }
 
-    public Value visitIndexExpr(Index expr) {
+    public Value visitIndexExpr(IndexExpr expr) {
         Value target = eval(expr.target);
         Value idx = eval(expr.index);
 
@@ -775,7 +840,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
 
     public Value eval(Expr.ExprInterface expr) { return expr.accept(this); }
 
-    private boolean isTruthy(Value v) {
+    public boolean isTruthy(Value v) {
         switch (v.getType()) {
             case NULL: return false;
             case BOOL: return v.asBool();
@@ -796,7 +861,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
         }
     }
     
-    private Value evalNew(String className, List<Value> args) {
+    public Value evalNew(String className, List<Value> args) {
         Value.ClassDescriptor desc = classes.get(className);
         if (desc == null) throw new RuntimeException("Unknown class: " + className);
 
@@ -821,7 +886,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
     }
 
 
-    private boolean isEqual(Value a, Value b) {
+    public boolean isEqual(Value a, Value b) {
         if (a.getType() == Value.Type.NULL && b.getType() == Value.Type.NULL) return true;
         if (a.getType() == Value.Type.NULL || b.getType() == Value.Type.NULL) return false;
         if (a.getType() != b.getType()) return false;
@@ -859,13 +924,13 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
         }
     }
 
-    private void requireNumber(Value a, Value b, Token op) {
+    public void requireNumber(Value a, Value b, Token op) {
         if (a.getType() != Value.Type.NUMBER || b.getType() != Value.Type.NUMBER) {
             throw new RuntimeException("Operator '" + op.lexeme + "' expects numbers");
         }
     }
 
-    private String stringify(Value v) {
+    public String stringify(Value v) {
         if (v.getType() == Value.Type.NULL) return "null";
         switch (v.getType()) {
             case STRING: return v.asString();
@@ -874,99 +939,19 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
         }
     }
 
-    private static final class ReturnSignal extends RuntimeException {
+    public static final class ReturnSignal extends RuntimeException {
         private static final long serialVersionUID = 1L;
 		final Value value;
         ReturnSignal(Value value) { super(null, null, false, false); this.value = value; }
     }
 
-    private static final class BreakSignal extends RuntimeException {
+    public static final class BreakSignal extends RuntimeException {
         private static final long serialVersionUID = 1L;
 
 		BreakSignal() { super(null, null, false, false); }
     }
 
-    private static final class UserFunction {
-        final String name;
-        final List<Token> params;
-        final List<Stmt> body;
-        final Environment closure;
-
-        UserFunction(String name, List<Token> params, List<Stmt> body, Environment closure) {
-            this.name = name;
-            this.params = params;
-            this.body = body;
-            this.closure = closure;
-        }
-
-        Value call(Interpreter interpreter, List<Value> args) {
-            if (args.size() != params.size()) {
-                throw new RuntimeException(name + "() expects " + params.size() + " arguments, got " + args.size());
-            }
-
-            Environment previous = interpreter.env;
-            interpreter.env = previous.childScope(null, closure.vars);
-            try {
-            	for (int i = 0; i < params.size(); i++) {
-            	    String pRaw = params.get(i).lexeme;     // e.g. "user_payload??"
-            	    Value v = args.get(i);
-
-            	    // Optional, name-driven validation/coercion hook (must see ?? marker).
-            	    v = interpreter.maybeValidateUserArg(name, pRaw, v);
-
-            	    // Bind variable name WITHOUT the trailing "??" (avoid visual confusion)
-            	    String pVar = pRaw.endsWith("??") ? pRaw.substring(0, pRaw.length() - 2) : pRaw;
-
-            	    interpreter.env.define(pVar, v);
-            	}
-            	
-                try {
-                    for (Stmt s : body) s.accept(interpreter);
-                } catch (ReturnSignal rs) {
-                    return rs.value;
-                }
-
-                return Value.nil();
-            } finally {
-                interpreter.env = previous;
-            }
-        }
-        
-        Value callWithThis(Interpreter interpreter, Value thisValue, List<Value> args) {
-            if (args.size() != params.size()) {
-                throw new RuntimeException(name + "() expects " + params.size() + " arguments, got " + args.size());
-            }
-
-            Environment previous = interpreter.env;
-            interpreter.env = previous.childScope(thisValue.asClassInstance(), closure.vars);
-            try {
-                // Inject `this` FIRST
-                interpreter.env.define("this", thisValue);
-
-                // Bind parameters (same logic as call())
-                for (int i = 0; i < params.size(); i++) {
-                    String pRaw = params.get(i).lexeme;     // e.g. "user_payload??"
-                    Value v = args.get(i);
-
-                    v = interpreter.maybeValidateUserArg(name, pRaw, v);
-
-                    String pVar = pRaw.endsWith("??") ? pRaw.substring(0, pRaw.length() - 2) : pRaw;
-                    interpreter.env.define(pVar, v);
-                }
-
-                try {
-                    for (Stmt s : body) s.accept(interpreter);
-                } catch (ReturnSignal rs) {
-                    return rs.value;
-                }
-
-                return Value.nil();
-            } finally {
-                interpreter.env = previous;
-            }
-        }
-
-    }
+    
 
 	@Override
 	public Value visitMapLiteralExpr(MapLiteral expr) {
@@ -1011,7 +996,5 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
 	    // IMPORTANT: you can't currently delete from env via API, so add a method:
 	    env.remove(key);  // implement below
 	}
-
-
 
 }

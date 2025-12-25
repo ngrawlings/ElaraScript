@@ -11,7 +11,7 @@ public enum TokenType {
     EQUAL, EQUAL_EQUAL,
     GREATER, GREATER_EQUAL,
     LESS, LESS_EQUAL,
-    AND_AND, OR_OR,
+    AND_AND, OR_OR, AMP,
 
     IDENTIFIER, STRING, NUMBER,
 

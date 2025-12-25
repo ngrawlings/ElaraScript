@@ -366,18 +366,18 @@ public class Parser {
             if (match(TokenType.LEFT_PAREN)) {
                 expr = finishCall(expr);
             } else if (match(TokenType.LEFT_BRACKET)) {
-                Token bracket = previous();                 // the '[' token
+                Token bracket = previous();
                 Expr.ExprInterface index = expression();
                 consume(TokenType.RIGHT_BRACKET, "Expect ']' after index.");
-                expr = new Index(expr, index, bracket);     // <-- correct AST node + token
+                expr = new Index(expr, index, bracket);
             } else if (match(TokenType.DOT)) {
                 Token method = consume(TokenType.IDENTIFIER, "Expect method name after '.'.");
                 consume(TokenType.LEFT_PAREN, "Expect '(' after method name.");
 
-                List<Expr.ExprInterface> args = new ArrayList<>();
+                List<CallArg> args = new ArrayList<>();
                 if (!check(TokenType.RIGHT_PAREN)) {
                     do {
-                        args.add(expression());
+                        args.add(parseCallArg());
                     } while (match(TokenType.COMMA));
                 }
                 consume(TokenType.RIGHT_PAREN, "Expect ')' after arguments.");
@@ -392,21 +392,44 @@ public class Parser {
     }
 
     private Expr.ExprInterface finishCall(Expr.ExprInterface callee) {
-        List<CallArg> arguments = new ArrayList<CallArg>();
+        List<CallArg> arguments = new ArrayList<>();
+
         if (!check(TokenType.RIGHT_PAREN)) {
             do {
-                boolean spread = false;
-                Token spreadTok = null;
-                if (match(TokenType.DOUBLE_STAR)) {
-                    spread = true;
-                    spreadTok = previous();
-                }
-                Expr.ExprInterface argExpr = expression();
-                arguments.add(new CallArg(spread, argExpr, spreadTok));
+                arguments.add(parseCallArg());
             } while (match(TokenType.COMMA));
         }
+
         Token paren = consume(TokenType.RIGHT_PAREN, "Expect ')' after arguments.");
         return new Expr.Call(callee, paren, arguments);
+    }
+    
+    private CallArg parseCallArg() {
+        boolean spread = false;
+        Token spreadTok = null;
+        if (match(TokenType.DOUBLE_STAR)) {
+            spread = true;
+            spreadTok = previous();
+        }
+
+        boolean copy = false;
+        Token copyTok = null;
+
+        // prefix &
+        if (match(TokenType.AMP)) {
+            copy = true;
+            copyTok = previous();
+        }
+
+        Expr.ExprInterface argExpr = expression();
+
+        // suffix & (optional support)
+        if (!copy && match(TokenType.AMP)) {
+            copy = true;
+            copyTok = previous();
+        }
+
+        return new CallArg(spread, copy, argExpr, spreadTok, copyTok);
     }
 
     private Expr.ExprInterface primary() {

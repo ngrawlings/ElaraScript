@@ -20,16 +20,10 @@ public class Value {
     public static Value number(double d) { return new Value(Type.NUMBER, d); }
     public static Value bool(boolean b) { return new Value(Type.BOOL, b); }
     public static Value string(String s) { return new Value(Type.STRING, s); }
-    public static Value bytes(byte[] b) {
-        if (b == null) return new Value(Type.BYTES, null);
-        return new Value(Type.BYTES, Arrays.copyOf(b, b.length));
-    }
+    public static Value bytes(byte[] b) { return new Value(Type.BYTES, b); }
     public static Value array(List<Value> a) { return new Value(Type.ARRAY, a); }
     public static Value matrix(List<List<Value>> m) { return new Value(Type.MATRIX, m); }
-    public static Value map(Map<String, Value> m) {
-        if (m == null) return new Value(Type.MAP, null);
-        return new Value(Type.MAP, new LinkedHashMap<>(m));
-    }
+    public static Value map(Map<String, Value> m) { return new Value(Type.MAP, m); }
     public static Value clazz(ClassDescriptor c) { return new Value(Type.CLASS, c); }
 
     /** Stateless class descriptor (no instance state yet). */
@@ -89,8 +83,7 @@ public class Value {
 
     public byte[] asBytes() {
         if (type != Type.BYTES) throw new RuntimeException("Expected bytes, got " + type);
-        if (value == null) return null;
-        return Arrays.copyOf((byte[]) value, ((byte[]) value).length);
+        return (byte[]) value; // NO defensive copy
     }
 
     @SuppressWarnings("unchecked")
@@ -109,6 +102,13 @@ public class Value {
     public Map<String, Value> asMap() {
         if (type != Type.MAP) throw new RuntimeException("Expected map, got " + type);
         return (Map<String, Value>) value;
+    }
+    
+    public ClassDescriptor asClass() {
+        if (type != Type.CLASS) {
+            throw new RuntimeException("Expected class instance, got " + type);
+        }
+        return (ClassDescriptor) value;
     }
     
     public ClassInstance asClassInstance() {
@@ -144,4 +144,71 @@ public class Value {
                 return "null";
         }
     }
+    
+    /*
+     * Central point: how values traverse stack frames.
+     * as_copy is only true when caller used '&'
+     */
+    public Value getForChildStackFrame(boolean as_copy) {
+        switch (type) {
+            // Scalars: always isolate wrapper (keeps “stack feels like pass-by-value”)
+            case NUMBER: return Value.number(asNumber());
+            case BOOL:   return Value.bool(asBool());
+            case FUNC:   return Value.func(asFunc());
+            case NULL:   return Value.nil();
+
+            case STRING:
+                // Strings are immutable anyway; but keep your behavior:
+                return as_copy ? Value.string(new String(asString())) : Value.string(asString());
+
+            case BYTES:
+                if (!as_copy) {
+                    return Value.bytes((byte[]) value); // no copy
+                }
+                byte[] src = (byte[]) value;
+                return Value.bytes(src == null ? null : Arrays.copyOf(src, src.length));
+
+            case ARRAY:
+                if (!as_copy) return Value.array(asArray());
+                List<Value> a = asArray();
+                if (a == null) return Value.array(null);
+                List<Value> ao = new java.util.ArrayList<>(a.size());
+                for (Value item : a) ao.add(item == null ? null : item.getForChildStackFrame(true));
+                return Value.array(ao);
+
+            case MATRIX:
+                if (!as_copy) return Value.matrix(asMatrix());
+                List<List<Value>> m = asMatrix();
+                if (m == null) return Value.matrix(null);
+                List<List<Value>> mo = new java.util.ArrayList<>(m.size());
+                for (List<Value> row : m) {
+                    if (row == null) { mo.add(null); continue; }
+                    List<Value> ro = new java.util.ArrayList<>(row.size());
+                    for (Value cell : row) ro.add(cell == null ? null : cell.getForChildStackFrame(true));
+                    mo.add(ro);
+                }
+                return Value.matrix(mo);
+
+            case MAP:
+                if (!as_copy) return Value.map(asMap());
+                Map<String, Value> mm = asMap();
+                if (mm == null) return Value.map(null);
+                Map<String, Value> mout = new LinkedHashMap<>();
+                for (Map.Entry<String, Value> e : mm.entrySet()) {
+                    Value vv = e.getValue();
+                    mout.put(e.getKey(), vv == null ? null : vv.getForChildStackFrame(true));
+                }
+                return Value.map(mout);
+
+            case CLASS:
+                return new Value(Type.CLASS, asClass());
+
+            case CLASS_INSTANCE:
+                return new Value(Type.CLASS_INSTANCE, asClassInstance());
+
+            default:
+                throw new RuntimeException("Unsupported Value type for child stack frame: " + type);
+        }
+    }
+
 }
