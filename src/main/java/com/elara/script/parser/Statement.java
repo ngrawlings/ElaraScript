@@ -90,10 +90,12 @@ public class Statement {
     public static final class ClassStmt implements Stmt {
         final Token name;
         final List<FunctionStmt> methods;
+        final List<VarStmt> vars;
 
-        ClassStmt(Token name, List<FunctionStmt> methods) {
+        ClassStmt(Token name, List<FunctionStmt> methods, List<VarStmt> vars) {
             this.name = name;
             this.methods = methods;
+            this.vars = vars;
         }
 
         public void accept(StmtVisitor visitor) { visitor.visitClassStmt(this); }

@@ -9,6 +9,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 
 import com.elara.script.ElaraScript.BuiltinFunction;
 import com.elara.script.ElaraScript.Mode;
@@ -41,6 +42,7 @@ import com.elara.script.parser.Statement.Stmt;
 import com.elara.script.parser.Statement.StmtVisitor;
 import com.elara.script.parser.Statement.VarStmt;
 import com.elara.script.parser.Statement.While;
+import com.elara.script.parser.Value.ClassInstance;
 import com.elara.script.shaping.DataShapingRegistry;
 import com.elara.script.shaping.ElaraDataShaper;
 
@@ -222,6 +224,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
         String className = stmt.name.lexeme; // or stmt.name.lexeme if Token
 
         LinkedHashMap<String, Object> methods = new LinkedHashMap<>();
+        LinkedHashMap<String, Object> vars = new LinkedHashMap<>();
         
         for (FunctionStmt fn : stmt.methods) {
             String mName = fn.name.lexeme; // or fn.name.lexeme if Token
@@ -237,8 +240,17 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
             // IMPORTANT: store by SIMPLE name
             methods.put(mName, uf);
         }
+        
+        for (VarStmt v : stmt.vars) {
+        	String mName = v.name.lexeme;
+        	if (v.initializer instanceof Literal) {
+        		vars.put(mName, v.initializer);
+        	} else {
+        		throw new RuntimeException("Type is not a literal");
+        	}
+        }
 
-        Value.ClassDescriptor desc = new Value.ClassDescriptor(className, methods);
+        Value.ClassDescriptor desc = new Value.ClassDescriptor(className, methods, vars);
 
         // If you're keeping class descriptors in env now:
         env.define(className, new Value(Value.Type.CLASS, desc));
@@ -352,6 +364,15 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
         if (env.exists(name)) {
             return env.get(name);
         }
+        
+        if (env.instance_owner != null) {
+        	if ("this".equals(name))
+        		return env.instance_owner;
+        	
+        	if (env.instance_owner.asClassInstance()._this.containsKey(name)) {
+        		return env.instance_owner.asClassInstance()._this.get(name);
+        	}
+        }
 
         // 2) If no variable, but a function exists with that name, return FUNC
         if (userFunctions.containsKey(name) || functions.containsKey(name)) {
@@ -462,7 +483,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
             return v;
         });
 
-        Value.ClassDescriptor desc = new Value.ClassDescriptor(TR_CLASS, methods);
+        Value.ClassDescriptor desc = new Value.ClassDescriptor(TR_CLASS, methods, null);
         classes.put(TR_CLASS, desc);
 
         // Optional: also expose as a global CLASS value if you want (not required for trycall)
@@ -888,16 +909,41 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
 
         // Create state map (match your MAP representation)
         LinkedHashMap<String, Value> state = new LinkedHashMap<>();
+        
         env.define(key, Value.map(state)); // <-- adapt to your actual map constructor
 
         // Create instance handle
         Value.ClassInstance inst = new Value.ClassInstance(className, uuid);
         Value instanceValue = new Value(Value.Type.CLASS_INSTANCE, inst);
 
+        // define variables
+        for (Entry<String, Object> e : desc.vars.entrySet()) {
+        	String name = e.getKey();
+        	if (e.getValue() instanceof Literal) {
+        		Literal v = (Literal)e.getValue();
+        		Object val = ((Literal)e.getValue()).value;
+	        	
+        		// TODO: Must be registered to the current _this
+	        	if (val instanceof String) {
+	        		Value _v = new Value(Value.Type.STRING, val);
+	        		((ClassInstance)instanceValue.value)._this.put(name, _v);
+	        	} else if (val instanceof Double) {
+	        		Value _v = new Value(Value.Type.NUMBER, val);
+	        		((ClassInstance)instanceValue.value)._this.put(name, _v);
+	        	} else if (val instanceof Boolean) {
+	        		Value _v = new Value(Value.Type.BOOL, val);
+	        		((ClassInstance)instanceValue.value)._this.put(name, _v);
+	        	} else {
+	        		throw new RuntimeException("Type not yet supported in call instantiation");
+	        	}
+	        	
+        	}
+        }
+        
         // Invoke constructor if present
         Object ctorObj = desc.methods.get("constructor");
         if (ctorObj instanceof UserFunction) {
-            ((UserFunction) ctorObj).callWithThis(this, instanceValue, args);
+            ((UserFunction) ctorObj).callWithThis(this, (Value)instanceValue, args);
         }
 
         return instanceValue;
@@ -1230,7 +1276,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
 	        sb.append("\"depth\":").append(idx - 1);
 
 	        if (e.instance_owner != null) {
-	            sb.append(",\"instance_owner\":\"").append(jsonEscape(e.instance_owner.stateKey())).append('"');
+	            sb.append(",\"instance_owner\":\"").append(jsonEscape(e.instance_owner.asClassInstance().stateKey())).append('"');
 	        } else {
 	            sb.append(",\"instance_owner\":null");
 	        }

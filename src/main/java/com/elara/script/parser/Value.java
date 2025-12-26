@@ -30,10 +30,12 @@ public class Value {
     public static final class ClassDescriptor {
         public final String name;
         public final LinkedHashMap<String, Object> methods; // value: Interpreter.UserFunction later
-
-        public ClassDescriptor(String name, LinkedHashMap<String, Object> methods) {
+        public final LinkedHashMap<String, Object> vars;
+        
+        public ClassDescriptor(String name, LinkedHashMap<String, Object> methods, LinkedHashMap<String, Object> vars) {
             this.name = name;
             this.methods = (methods == null) ? new LinkedHashMap<>() : methods;
+            this.vars = (vars == null) ? new LinkedHashMap<>() : vars;
         }
     }
     

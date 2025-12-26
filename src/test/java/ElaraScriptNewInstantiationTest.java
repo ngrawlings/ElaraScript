@@ -17,10 +17,22 @@ public class ElaraScriptNewInstantiationTest {
 
         String src =
                 "class MyClass {\n" +
-                "  def myMethod() { return 1; }\n" +
+                "  let x = 0;" +
+                "  let y = 0;" +
+                "  def constructor() { " +
+                "     this.x = 1;" + 
                 "}\n" +
+                "  def myMethod() {\n  }\n" +
+                "}\n" + 
+                "function fn() {\n" +
                 "let a = new MyClass();\n" +
-                "let b = new MyClass();\n";
+                "let b = new MyClass();\n" +
+                "let a.myMethod();\n" +
+                "let x = a.x;\n" +
+                "let y = a.y;\n" +
+                "debug_print();" + 
+                "}" + 
+                "fn();\n";
 
         Map<String, Value> env = assertDoesNotThrow(() ->
                 es.run(src, new HashMap<>())

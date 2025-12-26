@@ -22,6 +22,7 @@ import com.elara.script.parser.Statement.Block;
 import com.elara.script.parser.Statement.ExprStmt;
 import com.elara.script.parser.Statement.FunctionStmt;
 import com.elara.script.parser.Statement.Stmt;
+import com.elara.script.parser.Statement.VarStmt;
 import com.elara.script.parser.Statement.While;
 
 public class Parser {
@@ -72,20 +73,24 @@ public class Parser {
         consume(TokenType.LEFT_BRACE, "Expect '{' after class name.");
 
         List<FunctionStmt> methods = new ArrayList<>();
+        List<VarStmt> vars = new ArrayList<>();
 
         while (!check(TokenType.RIGHT_BRACE) && !isAtEnd()) {
             if (match(TokenType.DEF)) {
                 // IMPORTANT: add the parsed method to the list
                 methods.add(defFunction("method"));
+            } else if (match(TokenType.LET)) {
+            	VarStmt var_stmt = (VarStmt)varDeclaration();
+            	vars.add(var_stmt);
             } else {
-                throw error(peek(), "Only 'def' declarations are allowed inside a class body.");
+                throw error(peek(), "Only 'def' and 'let' declarations are allowed inside a class body.");
             }
         }
 
         consume(TokenType.RIGHT_BRACE, "Expect '}' after class body.");
 
         // If your ClassStmt.name is String:
-        return new Statement.ClassStmt(name, methods);
+        return new Statement.ClassStmt(name, methods, vars);
     }
 
     /** Parses a class method declaration after having consumed 'def'. */

@@ -67,12 +67,9 @@ public class UserFunction {
         Environment previous = interpreter.env;
 
         // Method call frame: child of closure, but instance_owner set.
-        interpreter.env = closure.childScope(thisValue.asClassInstance());
+        interpreter.env = closure.childScope(thisValue);
 
         try {
-            // Inject `this` FIRST
-            interpreter.env.define("this", thisValue);
-
             for (int i = 0; i < params.size(); i++) {
                 String pRaw = params.get(i).lexeme;
                 Value v = args.get(i);
@@ -93,6 +90,9 @@ public class UserFunction {
             }
 
             return Value.nil();
+        } catch (RuntimeException re) {
+        	System.out.println(re.getMessage());
+        	throw re;
         } finally {
             interpreter.env = previous;
         }

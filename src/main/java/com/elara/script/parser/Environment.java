@@ -13,7 +13,7 @@ public class Environment {
     public static final Map<String, Value> global = new LinkedHashMap<>();
 
     public final Environment parent;
-    public final Value.ClassInstance instance_owner;
+    public final Value instance_owner;
 
     // LIFO of local scopes for THIS environment frame
     private final Deque<Map<String, Value>> scopes = new ArrayDeque<>();
@@ -40,7 +40,7 @@ public class Environment {
         }
     }
 
-    private Environment(Environment parent, Value.ClassInstance instance_owner) {
+    private Environment(Environment parent, Value instance_owner) {
         this.parent = parent;
         this.instance_owner = instance_owner;
         scopes.push(new LinkedHashMap<>()); // root scope for this frame
@@ -94,7 +94,7 @@ public class Environment {
     }
 
     private Map<String, Value> thisMap() {
-        return (instance_owner == null) ? null : instance_owner._this;
+        return (instance_owner == null) ? null : instance_owner.asClassInstance()._this;
     }
 
     private Map<String, Value> topScope() {
@@ -123,6 +123,16 @@ public class Environment {
         // parent chain (function closures etc)
         if (parent != null && parent.exists(name)) {
             return parent.get(name);
+        }
+        
+        //Check if it is the local class instance
+        if (instance_owner != null) {
+        	String[] parts = name.split("\\.");
+        	if (parts.length == 2) {
+        		if (instance_owner.asClassInstance().className.equals(parts[0]) && instance_owner.asClassInstance().uuid.equals(parts[1])) {
+        			return new Value(Value.Type.MAP, instance_owner.asClassInstance()._this);
+        		}
+        	}
         }
 
         // this
@@ -222,7 +232,7 @@ public class Environment {
      * If a call is being made to a function instance_owner must be null.
      * If it is being made to a class method, instance_owner must be set to the receiving class instance.
      */
-    public Environment childScope(Value.ClassInstance instance_owner) {
+    public Environment childScope(Value instance_owner) {
         return new Environment(this, instance_owner);
     }
     
