@@ -210,22 +210,48 @@ public class Environment {
         }
     }
 
-    public Map<String, Value> snapshot() {
-        Map<String, Value> out = (parent != null) ? parent.snapshot() : new LinkedHashMap<>();
+    /**
+     * Snapshot the chained environments as an ordered list of frames (outer -> inner).
+     *
+     * Each frame is a MAP with:
+     *  - vars: MAP (merged scopes for this frame only)
+     *  - this_ref: STRING (optional) => "<ClassName>.<uuid>"
+     *
+     * Also prepends a synthetic "global" frame that contains Environment.global.
+     */
+    public List<Map<String, Value>> snapshotFrames() {
+        List<Map<String, Value>> framesInnerToOuter = new ArrayList<>();
+        Environment cur = this;
 
-        // only root includes global in snapshot
-        if (parent == null) out.putAll(global);
+        while (cur != null) {
+            Map<String, Value> frame = new LinkedHashMap<>();
 
-        Map<String, Value> t = thisMap();
-        if (t != null) out.putAll(t);
+            // merge THIS frame's scopes only (oldest -> newest so "nearest wins")
+            Map<String, Value> merged = new LinkedHashMap<>();
+            for (java.util.Iterator<Map<String, Value>> it = cur.scopes.descendingIterator(); it.hasNext();) {
+                merged.putAll(it.next());
+            }
 
-        // apply scopes from oldest -> newest so "nearest" wins
-        // (descendingIterator gives bottom->top for ArrayDeque)
-        for (java.util.Iterator<Map<String, Value>> it = scopes.descendingIterator(); it.hasNext(); ) {
-            out.putAll(it.next());
+            frame.put("vars", Value.map(merged));
+
+            if (cur.instance_owner != null && cur.instance_owner.getType() == Value.Type.CLASS_INSTANCE) {
+                Value.ClassInstance inst = cur.instance_owner.asClassInstance();
+                frame.put("this_ref", Value.string(inst.stateKey())); // "Class.uuid"
+            }
+
+            framesInnerToOuter.add(frame);
+            cur = cur.parent;
         }
 
-        return out;
+        // Reverse to outer -> inner
+        Collections.reverse(framesInnerToOuter);
+
+        // Synthetic global frame so export/import doesn't special-case statics
+        Map<String, Value> globalFrame = new LinkedHashMap<>();
+        globalFrame.put("vars", Value.map(new LinkedHashMap<>(global)));
+        framesInnerToOuter.add(0, globalFrame);
+
+        return framesInnerToOuter;
     }
 
     /*

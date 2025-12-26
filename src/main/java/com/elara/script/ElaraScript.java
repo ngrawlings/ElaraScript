@@ -41,6 +41,8 @@ public class ElaraScript {
         STRICT,
         INFERENCE
     }
+    
+    private Interpreter interpreter = null;
 
     /** Public value type used by host code. */
 
@@ -190,7 +192,7 @@ public class ElaraScript {
     }
 
     private Map<String, Value> runInternal(String source, Environment env) {
-        Interpreter interpreter = null;
+        
         try {
             Lexer lexer = new Lexer(source);
             List<Token> tokens = lexer.tokenize();
@@ -200,7 +202,7 @@ public class ElaraScript {
             interpreter = new Interpreter(env, functions, dataShaping, maxCallDepth, mode, this::onInterpreterError);
             interpreter.execute(program);
 
-            return env.snapshot();
+            return interpreter.snapshot();
         } catch (RuntimeException e) {
             // Route everything (lex/parse/runtime) through the same error policy.
             onInterpreterError(
@@ -214,7 +216,7 @@ public class ElaraScript {
 
             // If callback is set, suppress, always.
             if (errorCallbackFn != null) {
-                return env.snapshot();
+            	return interpreter.snapshot();
             }
 
             // No callback: throw to host (JUnit)
@@ -273,7 +275,7 @@ public class ElaraScript {
             List<Value> args = (entryArgs == null) ? Collections.emptyList() : entryArgs;
             Value out = interpreter.invokeForHost(entryFunctionName, args);
 
-            return new EntryRunResult(env.snapshot(), out);
+            return new EntryRunResult((interpreter == null) ? emptySnapshot(env) : interpreter.snapshot(), out);
         } catch (RuntimeException e) {
             onInterpreterError(
                     e,
@@ -286,7 +288,7 @@ public class ElaraScript {
 
             // callback set => suppress (always)
             if (errorCallbackFn != null) {
-                return new EntryRunResult(env.snapshot(), Value.nil());
+                return new EntryRunResult((interpreter == null) ? emptySnapshot(env) : interpreter.snapshot(), Value.nil());
             }
 
             throw e;
@@ -513,4 +515,24 @@ public class ElaraScript {
             throw new RuntimeException(name + "() expects " + expected + " arguments, got " + args.size());
         }
     }
+    
+    private static Map<String, Value> emptySnapshot(Environment env) {
+        Map<String, Value> out = new LinkedHashMap<>();
+
+        List<Map<String, Value>> frames = env.snapshotFrames();
+        List<Value> frameVals = new ArrayList<>(frames.size());
+        for (Map<String, Value> f : frames) frameVals.add(Value.map(f));
+
+        out.put("environments", Value.array(frameVals));
+        out.put("class_instances", Value.array(new ArrayList<>()));
+        return out;
+    }
+    
+    public Map<String, Value> snapshot(Environment env) {
+    	if (interpreter != null)
+    		return interpreter.snapshot();
+    	return ElaraScript.emptySnapshot(env);
+    }
+
+    
 }

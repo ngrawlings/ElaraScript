@@ -17,20 +17,20 @@ public class ElaraScriptNewInstantiationTest {
 
         String src =
                 "class MyClass {\n" +
-                "  let x = 0;" +
-                "  let y = 0;" +
-                "  def constructor() { " +
-                "     this.x = 1;" + 
+                "  let x = 0;\n" +
+                "  let y = 0;\n" +
+                "  def constructor() { \n" +
+                "     this.x = 1;\n" + 
                 "}\n" +
-                "  def myMethod() {\n  }\n" +
+                "  def myMethod() { this.y = this.x +3;\n  }\n" +
                 "}\n" + 
                 "function fn() {\n" +
                 "let a = new MyClass();\n" +
                 "let b = new MyClass();\n" +
-                "let a.myMethod();\n" +
+                "a.myMethod();\n" +
                 "let x = a.x;\n" +
                 "let y = a.y;\n" +
-                "debug_print();" + 
+                "debug_print();\n" + 
                 "}" + 
                 "fn();\n";
 

@@ -1,6 +1,5 @@
 import static org.junit.jupiter.api.Assertions.*;
 
-import java.util.LinkedHashMap;
 import java.util.Map;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -100,35 +99,6 @@ public class EnvironmentTraversalTest {
         // removing parent-owned var from child removes it from parent
         child.remove("x");
         assertThrows(RuntimeException.class, () -> root.get("x"));
-    }
-
-    @Test
-    void snapshotMergesGlobalThenParentThenLocal_withLocalWinning() {
-        Environment.global.put("k", Value.number(1));
-        Environment.global.put("shadow", Value.number(10));
-
-        Environment root = new Environment();
-        root.define("a", Value.number(2));
-        root.define("shadow", Value.number(20));
-
-        Environment child = root.childScope(null);
-        child.define("b", Value.number(3));
-        child.define("shadow", Value.number(30));
-
-        Map<String, Value> snap = child.snapshot();
-
-        // presence
-        assertEquals(1.0, snap.get("k").asNumber());
-        assertEquals(2.0, snap.get("a").asNumber());
-        assertEquals(3.0, snap.get("b").asNumber());
-
-        // local shadows parent shadows global
-        assertEquals(30.0, snap.get("shadow").asNumber());
-
-        // sanity: snapshot should not mutate originals
-        assertEquals(10.0, Environment.global.get("shadow").asNumber());
-        assertEquals(20.0, root.get("shadow").asNumber());
-        assertEquals(30.0, child.get("shadow").asNumber());
     }
 
     @Test

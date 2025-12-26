@@ -53,6 +53,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
     private final DataShapingRegistry shapingRegistry;
     private final Map<String, UserFunction> userFunctions = new LinkedHashMap<>();
     private final Map<String, Value.ClassDescriptor> classes = new HashMap<>();
+    private final LinkedHashMap<String, Value.ClassInstance> liveInstances = new LinkedHashMap<>();
     private final Deque<CallFrame> callStack = new ArrayDeque<CallFrame>();
     private final int maxDepth;
     private final Mode mode;
@@ -915,6 +916,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
         // Create instance handle
         Value.ClassInstance inst = new Value.ClassInstance(className, uuid);
         Value instanceValue = new Value(Value.Type.CLASS_INSTANCE, inst);
+        liveInstances.put(key, inst);
 
         // define variables
         for (Entry<String, Object> e : desc.vars.entrySet()) {
@@ -1059,6 +1061,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
 	    String key = inst.stateKey(); // class.uuid
 	    // IMPORTANT: you can't currently delete from env via API, so add a method:
 	    env.remove(key);  // implement below
+	    liveInstances.remove(key);
 	}
 	
 	@Override
@@ -1124,32 +1127,54 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
 	    return m;
 	}
 
-	private Value getInstanceField(Value.ClassInstance inst, String field) {
+	/**
+	 * Ensures the authoritative instance state map is `inst._this` and that the ROOT
+	 * environment has a visible `ClassName.uuid -> MAP(inst._this)` entry.
+	 *
+	 * Why: inside method frames, Environment.get("Class.uuid") may be redirected to
+	 * the instance owner's `_this` map. Using `env.exists/get` in that situation can
+	 * accidentally create shadow entries in the current scope. So for field access we
+	 * operate on `inst._this` directly and keep the root snapshot key in sync.
+	 */
+	private Map<String, Value> ensureInstanceStateBinding(Value.ClassInstance inst) {
+	    // Authoritative state lives here
+	    Map<String, Value> state = inst._this;
+	    if (state == null) {
+	        throw new RuntimeException("Instance _this map is null for: " + inst.stateKey());
+	    }
+
+	    // Root env must expose Class.uuid -> MAP(state) for snapshots/debugging.
+	    Environment root = env;
+	    while (root.parent != null) root = root.parent;
+
 	    String key = inst.stateKey();
-	    if (!env.exists(key)) return Value.nil();
+	    if (!root.exists(key)) {
+	        root.define(key, Value.map(state));
+	        return state;
+	    }
 
-	    Value st = env.get(key);
-	    if (st.getType() != Value.Type.MAP) return Value.nil();
+	    Value st = root.get(key);
+	    if (st.getType() != Value.Type.MAP) {
+	        root.assign(key, Value.map(state));
+	        return state;
+	    }
 
-	    Map<String, Value> m = st.asMap();
-	    if (m == null) return Value.nil();
+	    Map<String, Value> bound = st.asMap();
+	    if (bound == null || bound != state) {
+	        root.assign(key, Value.map(state));
+	    }
 
+	    return state;
+	}
+
+	private Value getInstanceField(Value.ClassInstance inst, String field) {
+	    Map<String, Value> m = ensureInstanceStateBinding(inst);
 	    Value v = m.get(field);
 	    return (v == null) ? Value.nil() : v;
 	}
 
-
 	private Value setInstanceField(Value.ClassInstance inst, String field, Value value) {
-	    String key = inst.stateKey();
-
-	    Value st = env.get(key); // MUST exist
-	    if (st.getType() != Value.Type.MAP) {
-	        throw new RuntimeException("Instance state is not a map: " + key);
-	    }
-
-	    Map<String, Value> m = st.asMap();
-	    if (m == null) throw new RuntimeException("Instance state map is null: " + key);
-
+	    Map<String, Value> m = ensureInstanceStateBinding(inst);
 	    m.put(field, value);
 	    return value;
 	}
@@ -1300,6 +1325,41 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
 	    sb.append("}");
 	    return sb.toString();
 	}
+	
+	/**
+	 * Returns a structured snapshot for export/import:
+	 *  {
+	 *    class_instances: [ { key, className, uuid, state } ... ],
+	 *    environments: [ { vars, this_ref? } ... ]   // outer -> inner
+	 *  }
+	 */
+	public Map<String, Value> snapshot() {
+	    Map<String, Value> out = new LinkedHashMap<>();
+
+	    // environments
+	    List<Map<String, Value>> frames = env.snapshotFrames();
+	    List<Value> frameVals = new ArrayList<>(frames.size());
+	    for (Map<String, Value> f : frames) frameVals.add(Value.map(f));
+	    out.put("environments", Value.array(frameVals));
+
+	    // class_instances (authoritative heap dump from instance._this)
+	    List<Value> instVals = new ArrayList<>(liveInstances.size());
+	    for (Map.Entry<String, Value.ClassInstance> e : liveInstances.entrySet()) {
+	        String key = e.getKey();
+	        Value.ClassInstance inst = e.getValue();
+
+	        Map<String, Value> ci = new LinkedHashMap<>();
+	        ci.put("key", Value.string(key));
+	        ci.put("className", Value.string(inst.className));
+	        ci.put("uuid", Value.string(inst.uuid));
+	        ci.put("state", Value.map(inst._this)); // authoritative
+	        instVals.add(Value.map(ci));
+	    }
+	    out.put("class_instances", Value.array(instVals));
+
+	    return out;
+	}
+
 
 
 }
