@@ -48,12 +48,11 @@ import com.elara.script.shaping.ElaraDataShaper;
 
 
 public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
-    Environment env;
+	public final ExecutionState exec_state;
     private final Map<String, BuiltinFunction> functions;
     private final DataShapingRegistry shapingRegistry;
     private final Map<String, UserFunction> userFunctions = new LinkedHashMap<>();
     private final Map<String, Value.ClassDescriptor> classes = new HashMap<>();
-    private final LinkedHashMap<String, Value.ClassInstance> liveInstances = new LinkedHashMap<>();
     private final Deque<CallFrame> callStack = new ArrayDeque<CallFrame>();
     private final int maxDepth;
     private final Mode mode;
@@ -65,8 +64,8 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
         Value call(Interpreter interpreter, Value thisValue, List<Value> args);
     }
 
-    public Interpreter(Environment env, Map<String, BuiltinFunction> functions, DataShapingRegistry shapingRegistry, int maxDepth, Mode mode, SystemErrorReporter errorReporter) {
-        this.env = env;
+    public Interpreter(ExecutionState exec_state, Map<String, BuiltinFunction> functions, DataShapingRegistry shapingRegistry, int maxDepth, Mode mode, SystemErrorReporter errorReporter) {
+        this.exec_state = exec_state;
         this.functions = functions;
         this.shapingRegistry = shapingRegistry;
         this.maxDepth = maxDepth;
@@ -181,15 +180,15 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
 
     public void visitVarStmt(VarStmt stmt) {
         Value value = eval(stmt.initializer);
-        env.define(stmt.name.lexeme, value);
+        exec_state.env.define(stmt.name.lexeme, value);
     }
 
     public void visitBlockStmt(Block stmt) {
-        env.pushBlock();
+    	exec_state.env.pushBlock();
         try {
             for (Stmt s : stmt.statements) s.accept(this);
         } finally {
-            env.popBlock();
+        	exec_state.env.popBlock();
         }
     }
 
@@ -217,7 +216,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
         if (userFunctions.containsKey(name)) {
             throw new RuntimeException("Function already defined: " + name);
         }
-        userFunctions.put(name, new UserFunction(name, stmt.params, stmt.body, env));
+        userFunctions.put(name, new UserFunction(name, stmt.params, stmt.body, exec_state.env));
     }
 
     @Override
@@ -235,7 +234,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
                     className + "." + mName,   // debug name only
                     fn.params,
                     fn.body,
-                    env                         // closure
+                    exec_state.env                         // closure
             );
 
             // IMPORTANT: store by SIMPLE name
@@ -254,7 +253,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
         Value.ClassDescriptor desc = new Value.ClassDescriptor(className, methods, vars);
 
         // If you're keeping class descriptors in env now:
-        env.define(className, new Value(Value.Type.CLASS, desc));
+        exec_state.env.define(className, new Value(Value.Type.CLASS, desc));
         // (or however you currently store it)
 
         // And/or keep registry:
@@ -362,16 +361,16 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
         String name = expr.name.lexeme;
 
         // 1) Normal variable lookup first (variables shadow functions)
-        if (env.exists(name)) {
-            return env.get(name);
+        if (exec_state.env.exists(name)) {
+            return exec_state.env.get(name);
         }
         
-        if (env.instance_owner != null) {
+        if (exec_state.env.instance_owner != null) {
         	if ("this".equals(name))
-        		return env.instance_owner;
+        		return exec_state.env.instance_owner;
         	
-        	if (env.instance_owner.asClassInstance()._this.containsKey(name)) {
-        		return env.instance_owner.asClassInstance()._this.get(name);
+        	if (exec_state.env.instance_owner.asClassInstance()._this.containsKey(name)) {
+        		return exec_state.env.instance_owner.asClassInstance()._this.get(name);
         	}
         }
 
@@ -387,7 +386,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
 
     public Value visitAssignExpr(Assign expr) {
         Value value = eval(expr.value);
-        env.assign(expr.name.lexeme, value);
+        exec_state.env.assign(expr.name.lexeme, value);
         return value;
     }
 
@@ -459,7 +458,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
         // r.result() -> bool
         methods.put("result", (NativeMethod) (itp, thisValue, a) -> {
             Value.ClassInstance inst = thisValue.asClassInstance();
-            Value st = itp.env.get(inst.stateKey());
+            Value st = itp.exec_state.env.get(inst.stateKey());
             Map<String, Value> m = st.asMap();
             Value v = (m == null) ? Value.nil() : m.get("result");
             return (v == null) ? Value.bool(false) : v;
@@ -468,7 +467,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
         // r.value() -> any
         methods.put("value", (NativeMethod) (itp, thisValue, a) -> {
             Value.ClassInstance inst = thisValue.asClassInstance();
-            Value st = itp.env.get(inst.stateKey());
+            Value st = itp.exec_state.env.get(inst.stateKey());
             Map<String, Value> m = st.asMap();
             Value v = (m == null) ? Value.nil() : m.get("value");
             return (v == null) ? Value.nil() : v;
@@ -477,7 +476,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
         // r.error() -> array<string> (always)
         methods.put("error", (NativeMethod) (itp, thisValue, a) -> {
             Value.ClassInstance inst = thisValue.asClassInstance();
-            Value st = itp.env.get(inst.stateKey());
+            Value st = itp.exec_state.env.get(inst.stateKey());
             Map<String, Value> m = st.asMap();
             Value v = (m == null) ? null : m.get("error");
             if (v == null || v.getType() != Value.Type.ARRAY) return Value.array(new ArrayList<>());
@@ -508,7 +507,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
         }
         state.put("error", Value.array(errArr));
 
-        env.define(key, Value.map(state));
+        exec_state.env.define(key, Value.map(state));
 
         Value.ClassInstance inst = new Value.ClassInstance(TR_CLASS, uuid);
         return new Value(Value.Type.CLASS_INSTANCE, inst);
@@ -517,7 +516,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
     public Value tryReadTryCallField(Value.ClassInstance inst, String field) {
         // Look up state map: env["TryCallResult.<uuid>"]
         String key = inst.stateKey();
-        Value st = env.exists(key) ? env.get(key) : Value.nil();
+        Value st = exec_state.env.exists(key) ? exec_state.env.get(key) : Value.nil();
         if (st.getType() != Value.Type.MAP) return Value.nil();
 
         Map<String, Value> m = st.asMap();
@@ -583,7 +582,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
             if (v.getType() != Value.Type.STRING) {
                 throw new RuntimeException("varexists() expects a string variable name");
             }
-            return Value.bool(env.exists(v.asString()));
+            return Value.bool(exec_state.env.exists(v.asString()));
         }
         
         // getglobal("varName") -> value|nil
@@ -592,7 +591,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
             Value v = args.get(0);
             if (v.getType() != Value.Type.STRING) throw new RuntimeException("getglobal() expects a string name");
 
-            Environment g = env;
+            Environment g = exec_state.env;
             while (g.parent != null) g = g.parent;          // walk to root env
             return g.existsInCurrentScope(v.asString()) ? Value.nil() : g.get(v.asString());
         }
@@ -604,7 +603,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
             Value val = args.get(1);
             if (k.getType() != Value.Type.STRING) throw new RuntimeException("setglobal() first arg must be string");
 
-            Environment g = env;
+            Environment g = exec_state.env;
             while (g.parent != null) g = g.parent;          // walk to root env
             g.assign(k.asString(), val);                  // overwrite/create at root
             return val;
@@ -674,8 +673,8 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
         }
 
         // INFERENCE mode: if `name` is a string variable, treat its value as the actual function name.
-        if (mode == Mode.INFERENCE && env.exists(name)) {
-            Value possible = env.get(name);
+        if (mode == Mode.INFERENCE && exec_state.env.exists(name)) {
+            Value possible = exec_state.env.get(name);
             if (possible.getType() == Value.Type.STRING) {
                 String targetName = possible.asString();
                 callStack.push(new CallFrame(name + "->" + targetName, args));
@@ -911,12 +910,12 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
         // Create state map (match your MAP representation)
         LinkedHashMap<String, Value> state = new LinkedHashMap<>();
         
-        env.define(key, Value.map(state)); // <-- adapt to your actual map constructor
+        exec_state.env.define(key, Value.map(state)); // <-- adapt to your actual map constructor
 
         // Create instance handle
         Value.ClassInstance inst = new Value.ClassInstance(className, uuid);
         Value instanceValue = new Value(Value.Type.CLASS_INSTANCE, inst);
-        liveInstances.put(key, inst);
+        exec_state.liveInstances.put(key, inst);
 
         // define variables
         for (Entry<String, Object> e : desc.vars.entrySet()) {
@@ -1060,8 +1059,8 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
 	    // remove state
 	    String key = inst.stateKey(); // class.uuid
 	    // IMPORTANT: you can't currently delete from env via API, so add a method:
-	    env.remove(key);  // implement below
-	    liveInstances.remove(key);
+	    exec_state.env.remove(key);  // implement below
+	    exec_state.liveInstances.remove(key);
 	}
 	
 	@Override
@@ -1106,12 +1105,12 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
 	    String key = inst.stateKey();
 
 	    // Ensure state exists and is a map
-	    if (!env.exists(key)) {
+	    if (!exec_state.env.exists(key)) {
 	        LinkedHashMap<String, Value> fresh = new LinkedHashMap<>();
-	        env.define(key, Value.map(fresh));
+	        exec_state.env.define(key, Value.map(fresh));
 	    }
 
-	    Value st = env.get(key);
+	    Value st = exec_state.env.get(key);
 	    if (st.getType() != Value.Type.MAP) {
 	        throw new RuntimeException("Instance state is not a map for: " + key + " (got " + st.getType() + ")");
 	    }
@@ -1120,7 +1119,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
 	    if (m == null) {
 	        // env contains map(null) which is invalid for instance state
 	        LinkedHashMap<String, Value> fresh = new LinkedHashMap<>();
-	        env.assign(key, Value.map(fresh));
+	        exec_state.env.assign(key, Value.map(fresh));
 	        return fresh;
 	    }
 
@@ -1144,7 +1143,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
 	    }
 
 	    // Root env must expose Class.uuid -> MAP(state) for snapshots/debugging.
-	    Environment root = env;
+	    Environment root = exec_state.env;
 	    while (root.parent != null) root = root.parent;
 
 	    String key = inst.stateKey();
@@ -1282,7 +1281,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
 	private String dumpAllStateJson() {
 	    StringBuilder sb = new StringBuilder(8192);
 
-	    Environment cur = this.env;
+	    Environment cur = this.exec_state.env;
 	    Environment root = cur.root();
 
 	    sb.append("{");
@@ -1337,14 +1336,14 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
 	    Map<String, Value> out = new LinkedHashMap<>();
 
 	    // environments
-	    List<Map<String, Value>> frames = env.snapshotFrames();
+	    List<Map<String, Value>> frames = exec_state.env.snapshotFrames();
 	    List<Value> frameVals = new ArrayList<>(frames.size());
 	    for (Map<String, Value> f : frames) frameVals.add(Value.map(f));
 	    out.put("environments", Value.array(frameVals));
 
 	    // class_instances (authoritative heap dump from instance._this)
-	    List<Value> instVals = new ArrayList<>(liveInstances.size());
-	    for (Map.Entry<String, Value.ClassInstance> e : liveInstances.entrySet()) {
+	    List<Value> instVals = new ArrayList<>(exec_state.liveInstances.size());
+	    for (Map.Entry<String, Value.ClassInstance> e : exec_state.liveInstances.entrySet()) {
 	        String key = e.getKey();
 	        Value.ClassInstance inst = e.getValue();
 

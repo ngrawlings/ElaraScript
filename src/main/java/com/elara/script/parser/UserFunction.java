@@ -23,12 +23,12 @@ public class UserFunction {
             throw new RuntimeException(name + "() expects " + params.size() + " arguments, got " + args.size());
         }
 
-        Environment previous = interpreter.env;
+        Environment previous = interpreter.exec_state.env;
 
         // IMPORTANT:
         // New call frame should be a child of the function's closure (lexical scoping),
         // not a child of the caller's environment.
-        interpreter.env = closure.childScope(null);
+        interpreter.exec_state.env = closure.childScope(null);
 
         try {
             for (int i = 0; i < params.size(); i++) {
@@ -44,7 +44,7 @@ public class UserFunction {
 
                 // 3) bind param name (strip ??)
                 String pVar = pRaw.endsWith("??") ? pRaw.substring(0, pRaw.length() - 2) : pRaw;
-                interpreter.env.define(pVar, v);
+                interpreter.exec_state.env.define(pVar, v);
             }
 
             try {
@@ -55,7 +55,7 @@ public class UserFunction {
 
             return Value.nil();
         } finally {
-            interpreter.env = previous;
+            interpreter.exec_state.env = previous;
         }
     }
 
@@ -64,10 +64,10 @@ public class UserFunction {
             throw new RuntimeException(name + "() expects " + params.size() + " arguments, got " + args.size());
         }
 
-        Environment previous = interpreter.env;
+        Environment previous = interpreter.exec_state.env;
 
         // Method call frame: child of closure, but instance_owner set.
-        interpreter.env = closure.childScope(thisValue);
+        interpreter.exec_state.env = closure.childScope(thisValue);
 
         try {
             for (int i = 0; i < params.size(); i++) {
@@ -80,7 +80,7 @@ public class UserFunction {
                 v = (v == null) ? null : v.getForChildStackFrame(c);
 
                 String pVar = pRaw.endsWith("??") ? pRaw.substring(0, pRaw.length() - 2) : pRaw;
-                interpreter.env.define(pVar, v);
+                interpreter.exec_state.env.define(pVar, v);
             }
 
             try {
@@ -94,7 +94,7 @@ public class UserFunction {
         	System.out.println(re.getMessage());
         	throw re;
         } finally {
-            interpreter.env = previous;
+            interpreter.exec_state.env = previous;
         }
     }
     

@@ -2,7 +2,9 @@ package com.elara.script;
 
 import com.elara.script.parser.EntryRunResult;
 import com.elara.script.parser.Environment;
+import com.elara.script.parser.ExecutionState;
 import com.elara.script.parser.Interpreter;
+import com.elara.script.parser.Interpreter.LiveClassInstance;
 import com.elara.script.parser.Lexer;
 import com.elara.script.parser.Parser;
 import com.elara.script.parser.Statement.Block;
@@ -12,6 +14,7 @@ import com.elara.script.parser.Statement.Stmt;
 import com.elara.script.parser.Statement.While;
 import com.elara.script.parser.Token;
 import com.elara.script.parser.Value;
+import com.elara.script.parser.Value.ClassInstance;
 import com.elara.script.shaping.DataShapingRegistry;
 import com.elara.script.shaping.ElaraDataShaper;
 
@@ -42,11 +45,7 @@ public class ElaraScript {
         INFERENCE
     }
     
-    private Interpreter interpreter = null;
-
     /** Public value type used by host code. */
-
-
     /** Functional interface for built-in functions. */
     public interface BuiltinFunction {
         Value call(List<Value> args);
@@ -165,41 +164,42 @@ public class ElaraScript {
     }
 
     public Map<String, Value> run(String source) {
-        Environment env = new Environment();
-        return runInternal(source, env);
+        ExecutionState exec_state = new ExecutionState();
+        return runInternal(source, exec_state);
     }
 
     public Value run(String source, String entryFunctionName, List<Value> entryArgs) {
+    
         EntryRunResult rr = runWithEntryResult(
                 source,
                 entryFunctionName,
                 entryArgs,
+                Collections.emptyMap(),
                 Collections.emptyMap()
         );
         return rr.value();
     }
 
     /** Global-program mode: run script with an initial environment. Returns final env snapshot. */
-    public Map<String, Value> run(String source, Map<String, Value> initialEnv) {
-        Environment env = new Environment(initialEnv);
-        return runInternal(source, env);
+    public Map<String, Value> run(String source, Map<String, Value.ClassInstance> instances, Map<String, Value> initialEnv) {
+    	ExecutionState exec_state = new ExecutionState(instances, initialEnv);
+        return runInternal(source, exec_state);
     }
 
     /** Global-program mode: run script with an initial environment (legacy alias if needed). */
-    public Map<String, Value> run(String source, Map<String, Value> initialEnv, boolean ignored) {
-        // Optional: keep if any older code calls a 3-arg version; otherwise delete.
-        return run(source, initialEnv);
+    public Map<String, Value> run(String source, Map<String, Value.ClassInstance> instances, Map<String, Value> initialEnv, boolean ignored) {
+    	return run(source, instances, initialEnv);
     }
 
-    private Map<String, Value> runInternal(String source, Environment env) {
-        
+    private Map<String, Value> runInternal(String source, ExecutionState exec_state) {
+    	Interpreter interpreter = null;
         try {
             Lexer lexer = new Lexer(source);
             List<Token> tokens = lexer.tokenize();
             Parser parser = new Parser(tokens);
             List<Stmt> program = parser.parse();
 
-            interpreter = new Interpreter(env, functions, dataShaping, maxCallDepth, mode, this::onInterpreterError);
+            interpreter = new Interpreter(exec_state, functions, dataShaping, maxCallDepth, mode, this::onInterpreterError);
             interpreter.execute(program);
 
             return interpreter.snapshot();
@@ -250,6 +250,7 @@ public class ElaraScript {
             String source,
             String entryFunctionName,
             List<Value> entryArgs,
+            Map<String, Value.ClassInstance> instances,
             Map<String, Value> initialEnv
     ) {
         if (source == null) throw new IllegalArgumentException("source must not be null");
@@ -257,7 +258,7 @@ public class ElaraScript {
             throw new IllegalArgumentException("entryFunctionName must not be empty");
         }
 
-        Environment env = new Environment(initialEnv);
+        ExecutionState exec_state = new ExecutionState(instances, initialEnv);
         Interpreter interpreter = null;
 
         try {
@@ -266,7 +267,7 @@ public class ElaraScript {
             Parser parser = new Parser(tokens);
             List<Stmt> program = parser.parse();
 
-            interpreter = new Interpreter(env, functions, dataShaping, maxCallDepth, mode, this::onInterpreterError);
+            interpreter = new Interpreter(exec_state, functions, dataShaping, maxCallDepth, mode, this::onInterpreterError);
 
             // 1) globals
             interpreter.execute(program);
@@ -275,7 +276,7 @@ public class ElaraScript {
             List<Value> args = (entryArgs == null) ? Collections.emptyList() : entryArgs;
             Value out = interpreter.invokeForHost(entryFunctionName, args);
 
-            return new EntryRunResult((interpreter == null) ? emptySnapshot(env) : interpreter.snapshot(), out);
+            return new EntryRunResult((interpreter == null) ? emptySnapshot(exec_state) : interpreter.snapshot(), out);
         } catch (RuntimeException e) {
             onInterpreterError(
                     e,
@@ -288,7 +289,7 @@ public class ElaraScript {
 
             // callback set => suppress (always)
             if (errorCallbackFn != null) {
-                return new EntryRunResult((interpreter == null) ? emptySnapshot(env) : interpreter.snapshot(), Value.nil());
+                return new EntryRunResult((interpreter == null) ? emptySnapshot(exec_state) : interpreter.snapshot(), Value.nil());
             }
 
             throw e;
@@ -516,22 +517,21 @@ public class ElaraScript {
         }
     }
     
-    private static Map<String, Value> emptySnapshot(Environment env) {
+    private static Map<String, Value> emptySnapshot(ExecutionState exec_state) {
         Map<String, Value> out = new LinkedHashMap<>();
 
-        List<Map<String, Value>> frames = env.snapshotFrames();
+        List<Map<String, Value>> frames = exec_state.env.snapshotFrames();
         List<Value> frameVals = new ArrayList<>(frames.size());
         for (Map<String, Value> f : frames) frameVals.add(Value.map(f));
 
         out.put("environments", Value.array(frameVals));
-        out.put("class_instances", Value.array(new ArrayList<>()));
+        out.put("class_instances", new Value(Value.Type.MAP, exec_state.liveInstances));
         return out;
     }
     
-    public Map<String, Value> snapshot(Environment env) {
-    	if (interpreter != null)
-    		return interpreter.snapshot();
-    	return ElaraScript.emptySnapshot(env);
+    public Map<String, Value> snapshot(ExecutionState exec_state) {
+    	Interpreter _int = new Interpreter(exec_state, functions, dataShaping, maxCallDepth, mode, this::onInterpreterError);
+    	return _int.snapshot();
     }
 
     
