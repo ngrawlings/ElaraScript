@@ -587,6 +587,20 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
             g.assign(k.asString(), val);                  // overwrite/create at root
             return val;
         }
+        
+        // debug_dump() -> string(json)
+        if ("debug_dump".equals(name)) {
+            if (!args.isEmpty()) throw new RuntimeException("debug_dump() expects 0 arguments");
+            return Value.string(dumpAllStateJson());
+        }
+
+        // debug_print() -> null, prints json
+        if ("debug_print".equals(name)) {
+            if (!args.isEmpty()) throw new RuntimeException("debug_print() expects 0 arguments");
+            String json = dumpAllStateJson();
+            System.out.println(json);
+            return Value.nil();
+        }
 
         if (callStack.size() >= maxDepth) throw new RuntimeException("Max call depth exceeded");
 
@@ -1024,7 +1038,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
 	    if (recv.getType() != Value.Type.CLASS_INSTANCE) {
 	        throw new RuntimeException("Only class instances support '.' access.");
 	    }
-	    return getInstanceField(recv, name);
+	    return getInstanceField(recv.asClassInstance(), name.lexeme);
 	}
 
 	/*
@@ -1035,7 +1049,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
 	    if (recv.getType() != Value.Type.CLASS_INSTANCE) {
 	        throw new RuntimeException("Only class instances support '.' assignment.");
 	    }
-	    return setInstanceField(recv, name, value);
+	    return setInstanceField(recv.asClassInstance(), name.lexeme, value);
 	}
 	
 	@SuppressWarnings("unchecked")
@@ -1064,28 +1078,182 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
 	    return m;
 	}
 
-	private Value getInstanceField(Value recv, Token field) {
-	    if (recv.getType() != Value.Type.CLASS_INSTANCE) {
-	        throw new RuntimeException("Field access requires class instance, got " + recv.getType());
-	    }
+	private Value getInstanceField(Value.ClassInstance inst, String field) {
+	    String key = inst.stateKey();
+	    if (!env.exists(key)) return Value.nil();
 
-	    Value.ClassInstance inst = recv.asClassInstance();
-	    Map<String, Value> state = requireInstanceStateMap(inst);
+	    Value st = env.get(key);
+	    if (st.getType() != Value.Type.MAP) return Value.nil();
 
-	    Value v = state.get(field.lexeme);
+	    Map<String, Value> m = st.asMap();
+	    if (m == null) return Value.nil();
+
+	    Value v = m.get(field);
 	    return (v == null) ? Value.nil() : v;
 	}
 
-	private Value setInstanceField(Value recv, Token field, Value value) {
-	    if (recv.getType() != Value.Type.CLASS_INSTANCE) {
-	        throw new RuntimeException("Field set requires class instance, got " + recv.getType());
+
+	private Value setInstanceField(Value.ClassInstance inst, String field, Value value) {
+	    String key = inst.stateKey();
+
+	    Value st = env.get(key); // MUST exist
+	    if (st.getType() != Value.Type.MAP) {
+	        throw new RuntimeException("Instance state is not a map: " + key);
 	    }
 
-	    Value.ClassInstance inst = recv.asClassInstance();
-	    Map<String, Value> state = requireInstanceStateMap(inst);
+	    Map<String, Value> m = st.asMap();
+	    if (m == null) throw new RuntimeException("Instance state map is null: " + key);
 
-	    state.put(field.lexeme, (value == null) ? Value.nil() : value);
-	    return (value == null) ? Value.nil() : value;
+	    m.put(field, value);
+	    return value;
 	}
+	
+	// Interpreter.java
+	private static String jsonEscape(String s) {
+	    if (s == null) return "";
+	    StringBuilder sb = new StringBuilder(s.length() + 16);
+	    for (int i = 0; i < s.length(); i++) {
+	        char c = s.charAt(i);
+	        switch (c) {
+	            case '\\': sb.append("\\\\"); break;
+	            case '"':  sb.append("\\\""); break;
+	            case '\n': sb.append("\\n"); break;
+	            case '\r': sb.append("\\r"); break;
+	            case '\t': sb.append("\\t"); break;
+	            default:
+	                if (c < 32) sb.append(String.format("\\u%04x", (int)c));
+	                else sb.append(c);
+	        }
+	    }
+	    return sb.toString();
+	}
+
+	private String valueToJson(Value v) {
+	    if (v == null) return "null";
+	    switch (v.getType()) {
+	        case NULL:
+	            return "null";
+	        case NUMBER:
+	            return Double.toString(v.asNumber());
+	        case BOOL:
+	            return v.asBool() ? "true" : "false";
+	        case STRING:
+	        case FUNC:
+	            return "\"" + jsonEscape(v.asString()) + "\"";
+	        case BYTES: {
+	            byte[] bb = (byte[]) v.value;
+	            if (bb == null) return "null";
+	            // keep it compact: length only (or base64 later)
+	            return "{\"bytes_len\":" + bb.length + "}";
+	        }
+	        case ARRAY: {
+	            List<Value> a = v.asArray();
+	            if (a == null) return "null";
+	            StringBuilder sb = new StringBuilder();
+	            sb.append('[');
+	            for (int i = 0; i < a.size(); i++) {
+	                if (i > 0) sb.append(',');
+	                sb.append(valueToJson(a.get(i)));
+	            }
+	            sb.append(']');
+	            return sb.toString();
+	        }
+	        case MATRIX: {
+	            List<List<Value>> m = v.asMatrix();
+	            if (m == null) return "null";
+	            StringBuilder sb = new StringBuilder();
+	            sb.append('[');
+	            for (int r = 0; r < m.size(); r++) {
+	                if (r > 0) sb.append(',');
+	                List<Value> row = m.get(r);
+	                if (row == null) {
+	                    sb.append("null");
+	                } else {
+	                    sb.append('[');
+	                    for (int c = 0; c < row.size(); c++) {
+	                        if (c > 0) sb.append(',');
+	                        sb.append(valueToJson(row.get(c)));
+	                    }
+	                    sb.append(']');
+	                }
+	            }
+	            sb.append(']');
+	            return sb.toString();
+	        }
+	        case MAP: {
+	            Map<String, Value> map = v.asMap();
+	            if (map == null) return "null";
+	            StringBuilder sb = new StringBuilder();
+	            sb.append('{');
+	            boolean first = true;
+	            for (Map.Entry<String, Value> e : map.entrySet()) {
+	                if (!first) sb.append(',');
+	                first = false;
+	                sb.append('"').append(jsonEscape(e.getKey())).append("\":");
+	                sb.append(valueToJson(e.getValue()));
+	            }
+	            sb.append('}');
+	            return sb.toString();
+	        }
+	        case CLASS: {
+	            Value.ClassDescriptor cd = v.asClass();
+	            return "{\"class\":\"" + jsonEscape(cd.name) + "\",\"methods\":" + cd.methods.size() + "}";
+	        }
+	        case CLASS_INSTANCE: {
+	            Value.ClassInstance ci = v.asClassInstance();
+	            return "{\"instance\":\"" + jsonEscape(ci.stateKey()) + "\"}";
+	        }
+	        default:
+	            return "\"<unsupported:" + v.getType() + ">\"";
+	    }
+	}
+
+	private String dumpAllStateJson() {
+	    StringBuilder sb = new StringBuilder(8192);
+
+	    Environment cur = this.env;
+	    Environment root = cur.root();
+
+	    sb.append("{");
+
+	    // 1) globals
+	    sb.append("\"global\":");
+	    sb.append(valueToJson(Value.map(Environment.global)));
+
+	    // 2) env chain
+	    sb.append(",\"env_chain\":[");
+	    int idx = 0;
+	    for (Environment e = cur; e != null; e = e.parent) {
+	        if (idx++ > 0) sb.append(',');
+
+	        sb.append('{');
+	        sb.append("\"depth\":").append(idx - 1);
+
+	        if (e.instance_owner != null) {
+	            sb.append(",\"instance_owner\":\"").append(jsonEscape(e.instance_owner.stateKey())).append('"');
+	        } else {
+	            sb.append(",\"instance_owner\":null");
+	        }
+
+	        // scopes
+	        sb.append(",\"scopes\":[");
+	        List<Map<String, Value>> scopes = e.debugScopesBottomToTop();
+	        for (int si = 0; si < scopes.size(); si++) {
+	            if (si > 0) sb.append(',');
+	            sb.append(valueToJson(Value.map(scopes.get(si))));
+	        }
+	        sb.append("]");
+
+	        // merged
+	        sb.append(",\"merged\":").append(valueToJson(Value.map(e.debugFrameMerged())));
+
+	        sb.append('}');
+	    }
+	    sb.append("]");
+
+	    sb.append("}");
+	    return sb.toString();
+	}
+
 
 }

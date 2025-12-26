@@ -1,8 +1,11 @@
 package com.elara.script.parser;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Deque;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 
@@ -226,5 +229,32 @@ public class Environment {
     public boolean existsInCurrentScope(String name) {
         Map<String, Value> top = scopes.peek();
         return top != null && top.containsKey(name);
+    }
+    
+    /** DEBUG: returns scopes from bottom->top (root block first, then nested blocks). */
+    public List<Map<String, Value>> debugScopesBottomToTop() {
+        // ArrayDeque iterator goes from head->tail, and you push() onto head,
+        // so iteration is TOP->BOTTOM. We want BOTTOM->TOP.
+        List<Map<String, Value>> topToBottom = new ArrayList<>();
+        for (Map<String, Value> s : scopes) topToBottom.add(s);
+
+        Collections.reverse(topToBottom); // now bottom->top
+        return topToBottom;
+    }
+
+    /** DEBUG: merged view of this frame (bottom->top so top shadows). */
+    public Map<String, Value> debugFrameMerged() {
+        Map<String, Value> out = new LinkedHashMap<>();
+        for (Map<String, Value> s : debugScopesBottomToTop()) {
+            out.putAll(s);
+        }
+        return out;
+    }
+
+    /** DEBUG: walk to root env frame. */
+    public Environment root() {
+        Environment e = this;
+        while (e.parent != null) e = e.parent;
+        return e;
     }
 }
