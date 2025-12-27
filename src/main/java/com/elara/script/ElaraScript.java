@@ -1,6 +1,7 @@
 package com.elara.script;
 
 import com.elara.script.parser.EntryRunResult;
+import com.elara.script.parser.Environment;
 import com.elara.script.parser.ExecutionState;
 import com.elara.script.parser.Interpreter;
 import com.elara.script.parser.Lexer;
@@ -129,14 +130,21 @@ public class ElaraScript {
         ElaraDataShaper<Value> shaper = dataShaping.shaper();
 
         return shaper.run(
-                shape,
-                rawInputs,
-                (initialEnv) -> {
-                    EntryRunResult rr = runWithEntryResult(source, entryFunctionName, entryArgs, Collections.emptyMap(), initialEnv);
-                    return rr.env();
-                },
-                includeDebugEnv
-        );
+        	    shape,
+        	    rawInputs,
+        	    (initialEnv) -> {
+        	    	EntryRunResult rr = runWithEntryResult(
+        	    		    source,
+        	    		    entryFunctionName,
+        	    		    entryArgs,
+        	    		    java.util.Collections.emptyMap(),
+        	    		    initialEnv
+        	    		);
+        	    		return snapshotToMergedVars(rr.env());
+        	    },
+        	    includeDebugEnv
+        	);
+
     }
 
     /**
@@ -153,11 +161,19 @@ public class ElaraScript {
         ElaraDataShaper<Value> shaper = dataShaping.shaper();
 
         return shaper.run(
-                shape,
-                rawInputs,
-                (initialEnv) -> run(source, Collections.emptyMap(), initialEnv),
-                includeDebugEnv
-        );
+        	    shape,
+        	    rawInputs,
+        	    (initialEnv) -> {
+        	    	Map<String, Value> snap = run(
+        	    		    source,
+        	    		    java.util.Collections.emptyMap(),
+        	    		    initialEnv
+        	    		);
+        	    		return snapshotToMergedVars(snap);
+        	    },
+        	    includeDebugEnv
+        	);
+
     }
 
     public Map<String, Value> run(String source) {
@@ -175,6 +191,11 @@ public class ElaraScript {
                 Collections.emptyMap()
         );
         return rr.value();
+    }
+    
+    public Map<String, Value> runWithState(String source, ExecutionState exec_state) {
+        if (exec_state == null) exec_state = new ExecutionState();
+        return runInternal(source, exec_state);
     }
 
     /** Global-program mode: run script with an initial environment. Returns final env snapshot. */
@@ -371,6 +392,62 @@ public class ElaraScript {
         } finally {
             reportingSystemError = false;
         }
+    }
+    
+    private static Map<String, Value> snapshotToMergedVars(Map<String, Value> snapshot) {
+        if (snapshot == null) return new LinkedHashMap<>();
+
+        // Back-compat: already a flat env
+        if (!snapshot.containsKey("environments")) return snapshot;
+
+        Value envsV = snapshot.get("environments");
+        if (envsV == null || envsV.getType() != Value.Type.ARRAY) return new LinkedHashMap<>();
+
+        List<Value> frames = envsV.asArray();
+        if (frames == null) return new LinkedHashMap<>();
+
+        // Merge vars from outer -> inner (inner overrides)
+        LinkedHashMap<String, Value> merged = new LinkedHashMap<>();
+        for (int i = 0; i < frames.size(); i++) {
+            Value frameV = frames.get(i);
+            if (frameV == null || frameV.getType() != Value.Type.MAP) continue;
+
+            Map<String, Value> frame = frameV.asMap();
+            if (frame == null) continue;
+
+            Value varsV = frame.get("vars");
+            if (varsV == null || varsV.getType() != Value.Type.MAP) continue;
+
+            Map<String, Value> vars = varsV.asMap();
+            if (vars == null) continue;
+
+            merged.putAll(vars);
+        }
+        return merged;
+    }
+    
+ // ElaraScript.java
+
+    private static Map<String, Value> snapshotFlat(ExecutionState execState) {
+        if (execState == null) return new LinkedHashMap<>();
+
+        LinkedHashMap<String, Value> out = new LinkedHashMap<>();
+
+        // include globals (setglobal/getglobal live here)
+        out.putAll(execState.global);
+
+        // merge root scopes (newest overrides older)
+        for (Map<String, Value> scope : execState.env.scopes) {
+            out.putAll(scope);
+        }
+
+        // expose live instance state under "<ClassName>.<uuid>"
+        for (Map.Entry<String, Value.ClassInstance> e : execState.liveInstances.entrySet()) {
+            Value.ClassInstance inst = e.getValue();
+            out.put(e.getKey(), Value.map(inst._this));
+        }
+
+        return out;
     }
 
     private void registerCoreBuiltins() {

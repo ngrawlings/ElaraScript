@@ -9,7 +9,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-import com.elara.script.parser.Environment;
 import com.elara.script.parser.ExecutionState;
 import com.elara.script.parser.Value;
 
@@ -69,13 +68,10 @@ public final class ElaraPersistentRunner {
             exec_state = new ExecutionState();
         }
 
-        // 3) Build initialEnv from exec_state (root env vars). We persist only root env + globals.
-        Map<String, Value> initialEnv = extractRootEnvVars(exec_state);
-
-        // 4) Run with restored instances + env
-        Map<String, Value> envAfter;
+        // 3) Run using the restored ExecutionState (keeps globals + env + instances in one object)
+        Map<String, Value> snapshot;
         try {
-            envAfter = engine.run(script, exec_state.liveInstances, initialEnv);
+            snapshot = engine.runWithState(script, exec_state);
         } catch (Exception e) {
             System.err.println("Script error:");
             e.printStackTrace(System.err);
@@ -83,10 +79,7 @@ public final class ElaraPersistentRunner {
             return;
         }
 
-        // 5) Update exec_state env to reflect the post-run root environment
-        exec_state.env = new Environment(envAfter);
-
-        // 6) Export unified state -> JSON-safe map -> JSON string using ElaraStateStore writer
+        // 4) Export unified state -> JSON-safe map -> JSON string using ElaraStateStore writer
         Map<String, Object> outJsonSafe = exec_state.exportJsonSafe();
         String outJson = new ElaraStateStore(outJsonSafe).toJson();
 
@@ -99,35 +92,40 @@ public final class ElaraPersistentRunner {
             return;
         }
 
-        // 7) Print a couple useful lines
+        // 5) Print a couple useful lines
         System.out.println("State saved to: " + statePath.toAbsolutePath());
-        if (envAfter.containsKey("out")) {
-            System.out.println("out = " + envAfter.get("out"));
+
+        // Snapshot is structured; merge vars for a friendly "out" display
+        Map<String, Value> merged = mergeSnapshotVars(snapshot);
+        if (merged.containsKey("out")) {
+            System.out.println("out = " + merged.get("out"));
         } else {
             System.out.println("(tip) Define `out` in your script to get a nice single-line summary.");
         }
     }
 
     /**
-     * Extract the root env vars from exec_state.env.
-     * If env has frames, use inner-most frame vars.
-     * If anything is missing, return empty.
+     * Merge vars from snapshot["environments"] frames (outer -> inner, inner overrides).
+     * This is only for CLI display convenience.
      */
-    private static Map<String, Value> extractRootEnvVars(ExecutionState exec_state) {
-        if (exec_state == null || exec_state.env == null) return new LinkedHashMap<>();
+    private static Map<String, Value> mergeSnapshotVars(Map<String, Value> snapshot) {
+        LinkedHashMap<String, Value> merged = new LinkedHashMap<>();
+        if (snapshot == null) return merged;
 
-        List<Map<String, Value>> frames = exec_state.env.snapshotFrames();
-        if (frames == null || frames.isEmpty()) return new LinkedHashMap<>();
+        Value envsV = snapshot.get("environments");
+        if (envsV == null || envsV.getType() != Value.Type.ARRAY || envsV.asArray() == null) return merged;
 
-        Map<String, Value> inner = frames.get(frames.size() - 1);
-        if (inner == null) return new LinkedHashMap<>();
+        List<Value> frames = envsV.asArray();
+        for (Value frameV : frames) {
+            if (frameV == null || frameV.getType() != Value.Type.MAP || frameV.asMap() == null) continue;
 
-        Value varsV = inner.get("vars");
-        if (varsV == null || varsV.getType() != Value.Type.MAP || varsV.asMap() == null) {
-            return new LinkedHashMap<>();
+            Map<String, Value> frame = frameV.asMap();
+            Value varsV = frame.get("vars");
+            if (varsV == null || varsV.getType() != Value.Type.MAP || varsV.asMap() == null) continue;
+
+            merged.putAll(varsV.asMap());
         }
-
-        return new LinkedHashMap<>(varsV.asMap());
+        return merged;
     }
 
     private ElaraPersistentRunner() {}

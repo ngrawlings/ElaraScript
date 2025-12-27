@@ -100,32 +100,38 @@ public final class ElaraStateStore {
         LinkedHashMap<String, Object> exec = new LinkedHashMap<>();
 
         // --- Environment ---
-        // Persist root env vars (inner-most frame) + global vars.
-        // This intentionally does NOT persist transient call-stack frames.
         Map<String, Object> envOut = new LinkedHashMap<>();
         Map<String, Object> globalOut = new LinkedHashMap<>();
+
+        boolean globalFilledFromFrames = false;
 
         if (execState.env != null) {
             List<Map<String, Value>> frames = execState.env.snapshotFrames();
 
-            // frame[0] is synthetic global frame.
             if (frames != null && !frames.isEmpty()) {
                 Map<String, Value> gFrame = frames.get(0);
                 Value gVarsV = (gFrame == null) ? null : gFrame.get("vars");
-                if (gVarsV != null && gVarsV.getType() == Value.Type.MAP) {
+                if (gVarsV != null && gVarsV.getType() == Value.Type.MAP && gVarsV.asMap() != null) {
                     for (Map.Entry<String, Value> e : gVarsV.asMap().entrySet()) {
                         globalOut.put(e.getKey(), ValueCodec.toPlainJava(e.getValue()));
                     }
+                    globalFilledFromFrames = true;
                 }
 
-                // inner-most frame is last (for normal runs, this is effectively your root env).
                 Map<String, Value> inner = frames.get(frames.size() - 1);
                 Value varsV = (inner == null) ? null : inner.get("vars");
-                if (varsV != null && varsV.getType() == Value.Type.MAP) {
+                if (varsV != null && varsV.getType() == Value.Type.MAP && varsV.asMap() != null) {
                     for (Map.Entry<String, Value> e : varsV.asMap().entrySet()) {
                         envOut.put(e.getKey(), ValueCodec.toPlainJava(e.getValue()));
                     }
                 }
+            }
+        }
+
+        // ✅ Fallback: if frames weren’t available, serialize execState.global directly
+        if (!globalFilledFromFrames && execState.global != null) {
+            for (Map.Entry<String, Value> e : execState.global.entrySet()) {
+                globalOut.put(e.getKey(), ValueCodec.toPlainJava(e.getValue()));
             }
         }
 
@@ -167,18 +173,20 @@ public final class ElaraStateStore {
         @SuppressWarnings("unchecked")
         Map<String, Object> exec = (Map<String, Object>) execRaw;
 
-        // --- Restore globals ---
+        ExecutionState out = new ExecutionState();
+
+        // --- Restore globals into exec state ---
         Object gRaw = exec.get(KEY_GLOBAL);
+        out.global.clear();
         if (gRaw instanceof Map) {
             @SuppressWarnings("unchecked")
             Map<String, Object> gm = (Map<String, Object>) gRaw;
-            Environment.global.clear();
             for (Map.Entry<String, Object> e : gm.entrySet()) {
-                Environment.global.put(e.getKey(), ValueCodec.fromPlainJava(e.getValue()));
+                out.global.put(e.getKey(), ValueCodec.fromPlainJava(e.getValue()));
             }
         }
 
-        // --- Restore env ---
+        // --- Restore env vars (root env state) ---
         Map<String, Value> envState = new LinkedHashMap<>();
         Object envRaw = exec.get(KEY_ENV);
         if (envRaw instanceof Map) {
@@ -188,9 +196,10 @@ public final class ElaraStateStore {
                 envState.put(e.getKey(), ValueCodec.fromPlainJava(e.getValue()));
             }
         }
+        out.env = new Environment(out, envState);
 
         // --- Restore instances ---
-        LinkedHashMap<String, Value.ClassInstance> instances = new LinkedHashMap<>();
+        out.liveInstances.clear();
         Object instRaw = exec.get(KEY_INSTANCES);
         if (instRaw instanceof List) {
             @SuppressWarnings("unchecked")
@@ -212,11 +221,11 @@ public final class ElaraStateStore {
                 if (stV != null && stV.getType() == Value.Type.MAP && stV.asMap() != null) {
                     inst._this.putAll(stV.asMap());
                 }
-                instances.put(key, inst);
+                out.liveInstances.put(key, inst);
             }
         }
 
-        return new ExecutionState(instances, envState);
+        return out;
     }
 
     /** Put a raw JSON-safe value into the store (used for patch/state sync). */
@@ -429,12 +438,258 @@ public final class ElaraStateStore {
     // ===================== TINY JSON PARSER/WRITER =====================
     // ... keep the rest of your Json implementation unchanged ...
     // (I didn’t paste the whole thing again here to avoid noise.)
+ // ===================== TINY JSON PARSER/WRITER =====================
+
+    /**
+     * Minimal JSON implementation (object/array/string/number/bool/null).
+     * - Numbers are parsed as Double.
+     * - Objects are LinkedHashMap to preserve insertion order.
+     * - This is intentionally strict enough for persistence.
+     */
     private static final class Json {
         private Json() {}
-        // your existing Json implementation...
-        // (unchanged)
-        // ...
-        static Object parse(String s) { throw new UnsupportedOperationException("paste your existing Json class here"); }
-        static void writeValue(StringBuilder sb, Object v) { throw new UnsupportedOperationException("paste your existing Json class here"); }
+
+        static Object parse(String s) {
+            if (s == null) throw new IllegalArgumentException("JSON is null");
+            Parser p = new Parser(s);
+            Object v = p.parseValue();
+            p.skipWs();
+            if (!p.eof()) throw p.err("Trailing data");
+            return v;
+        }
+
+        static void writeValue(StringBuilder sb, Object v) {
+            if (v == null) {
+                sb.append("null");
+                return;
+            }
+            if (v instanceof Boolean) {
+                sb.append(((Boolean) v) ? "true" : "false");
+                return;
+            }
+            if (v instanceof Number) {
+                double d = ((Number) v).doubleValue();
+                if (Double.isNaN(d) || Double.isInfinite(d)) {
+                    sb.append("null");
+                } else {
+                    sb.append(Double.toString(d));
+                }
+                return;
+            }
+            if (v instanceof String) {
+                writeString(sb, (String) v);
+                return;
+            }
+            if (v instanceof List) {
+                @SuppressWarnings("unchecked")
+                List<Object> a = (List<Object>) v;
+                sb.append('[');
+                for (int i = 0; i < a.size(); i++) {
+                    if (i > 0) sb.append(',');
+                    writeValue(sb, a.get(i));
+                }
+                sb.append(']');
+                return;
+            }
+            if (v instanceof Map) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> m = (Map<String, Object>) v;
+                sb.append('{');
+                boolean first = true;
+                for (Map.Entry<String, Object> e : m.entrySet()) {
+                    if (!first) sb.append(',');
+                    first = false;
+                    writeString(sb, e.getKey());
+                    sb.append(':');
+                    writeValue(sb, e.getValue());
+                }
+                sb.append('}');
+                return;
+            }
+
+            throw new IllegalArgumentException("Not JSON-serializable: " + v.getClass().getName());
+        }
+
+        static void writeString(StringBuilder sb, String s) {
+            sb.append('"');
+            for (int i = 0; i < s.length(); i++) {
+                char c = s.charAt(i);
+                switch (c) {
+                    case '"': sb.append("\\\""); break;
+                    case '\\': sb.append("\\\\"); break;
+                    case '\b': sb.append("\\b"); break;
+                    case '\f': sb.append("\\f"); break;
+                    case '\n': sb.append("\\n"); break;
+                    case '\r': sb.append("\\r"); break;
+                    case '\t': sb.append("\\t"); break;
+                    default:
+                        if (c < 0x20) {
+                            sb.append(String.format("\\u%04x", (int) c));
+                        } else {
+                            sb.append(c);
+                        }
+                }
+            }
+            sb.append('"');
+        }
+
+        private static final class Parser {
+            private final String s;
+            private int i;
+
+            Parser(String s) { this.s = s; this.i = 0; }
+
+            boolean eof() { return i >= s.length(); }
+
+            void skipWs() {
+                while (!eof()) {
+                    char c = s.charAt(i);
+                    if (c == ' ' || c == '\n' || c == '\r' || c == '\t') i++;
+                    else break;
+                }
+            }
+
+            RuntimeException err(String msg) {
+                return new IllegalArgumentException(msg + " at index " + i);
+            }
+
+            Object parseValue() {
+                skipWs();
+                if (eof()) throw err("Unexpected end");
+                char c = s.charAt(i);
+                if (c == '{') return parseObject();
+                if (c == '[') return parseArray();
+                if (c == '"') return parseString();
+                if (c == 't') return parseTrue();
+                if (c == 'f') return parseFalse();
+                if (c == 'n') return parseNull();
+                if (c == '-' || (c >= '0' && c <= '9')) return parseNumber();
+                throw err("Unexpected char '" + c + "'");
+            }
+
+            Object parseObject() {
+                expect('{');
+                skipWs();
+                LinkedHashMap<String, Object> m = new LinkedHashMap<>();
+                if (peek('}')) { i++; return m; }
+
+                while (true) {
+                    skipWs();
+                    String key = parseString();
+                    skipWs();
+                    expect(':');
+                    Object val = parseValue();
+                    m.put(key, val);
+                    skipWs();
+                    if (peek('}')) { i++; break; }
+                    expect(',');
+                }
+                return m;
+            }
+
+            Object parseArray() {
+                expect('[');
+                skipWs();
+                List<Object> a = new ArrayList<>();
+                if (peek(']')) { i++; return a; }
+
+                while (true) {
+                    Object v = parseValue();
+                    a.add(v);
+                    skipWs();
+                    if (peek(']')) { i++; break; }
+                    expect(',');
+                }
+                return a;
+            }
+
+            String parseString() {
+                expect('"');
+                StringBuilder sb = new StringBuilder();
+                while (!eof()) {
+                    char c = s.charAt(i++);
+                    if (c == '"') return sb.toString();
+                    if (c == '\\') {
+                        if (eof()) throw err("Bad escape");
+                        char e = s.charAt(i++);
+                        switch (e) {
+                            case '"': sb.append('"'); break;
+                            case '\\': sb.append('\\'); break;
+                            case '/': sb.append('/'); break;
+                            case 'b': sb.append('\b'); break;
+                            case 'f': sb.append('\f'); break;
+                            case 'n': sb.append('\n'); break;
+                            case 'r': sb.append('\r'); break;
+                            case 't': sb.append('\t'); break;
+                            case 'u': {
+                                if (i + 4 > s.length()) throw err("Bad unicode escape");
+                                String hex = s.substring(i, i + 4);
+                                i += 4;
+                                try {
+                                    sb.append((char) Integer.parseInt(hex, 16));
+                                } catch (NumberFormatException nfe) {
+                                    throw err("Bad unicode hex");
+                                }
+                                break;
+                            }
+                            default:
+                                throw err("Bad escape char '" + e + "'");
+                        }
+                    } else {
+                        sb.append(c);
+                    }
+                }
+                throw err("Unterminated string");
+            }
+
+            Double parseNumber() {
+                int start = i;
+                if (peek('-')) i++;
+                while (!eof() && Character.isDigit(s.charAt(i))) i++;
+                if (!eof() && s.charAt(i) == '.') {
+                    i++;
+                    while (!eof() && Character.isDigit(s.charAt(i))) i++;
+                }
+                if (!eof()) {
+                    char c = s.charAt(i);
+                    if (c == 'e' || c == 'E') {
+                        i++;
+                        if (!eof() && (s.charAt(i) == '+' || s.charAt(i) == '-')) i++;
+                        while (!eof() && Character.isDigit(s.charAt(i))) i++;
+                    }
+                }
+                String num = s.substring(start, i);
+                try {
+                    return Double.parseDouble(num);
+                } catch (NumberFormatException nfe) {
+                    throw err("Bad number");
+                }
+            }
+
+            Boolean parseTrue() {
+                expect('t'); expect('r'); expect('u'); expect('e');
+                return Boolean.TRUE;
+            }
+
+            Boolean parseFalse() {
+                expect('f'); expect('a'); expect('l'); expect('s'); expect('e');
+                return Boolean.FALSE;
+            }
+
+            Object parseNull() {
+                expect('n'); expect('u'); expect('l'); expect('l');
+                return null;
+            }
+
+            boolean peek(char c) {
+                return !eof() && s.charAt(i) == c;
+            }
+
+            void expect(char c) {
+                if (eof() || s.charAt(i) != c) throw err("Expected '" + c + "'");
+                i++;
+            }
+        }
     }
+
 }

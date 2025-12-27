@@ -3,8 +3,8 @@ import org.junit.jupiter.api.Test;
 import com.elara.script.ElaraScript;
 import com.elara.script.parser.Value;
 
-import java.lang.reflect.Field;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -22,65 +22,29 @@ public class ElaraScriptMethodThisTest {
                 "let a = new MyClass();\n" +
                 "let b = a.self();\n";
 
-        Map<String, Value> env = assertDoesNotThrow(() ->
-                es.run(src, new HashMap<>())
+        Map<String, Value> snapshot = assertDoesNotThrow(() ->
+                es.run(src, new LinkedHashMap<>(), new LinkedHashMap<>())
         );
 
-        assertNotNull(env);
-        assertTrue(env.containsKey("a"));
-        assertTrue(env.containsKey("b"));
+        Map<String, Value> vars = extractInnermostVars(snapshot);
 
-        Value aVal = env.get("a");
-        Value bVal = env.get("b");
+        assertTrue(vars.containsKey("a"));
+        assertTrue(vars.containsKey("b"));
+
+        Value aVal = vars.get("a");
+        Value bVal = vars.get("b");
 
         assertEquals(Value.Type.CLASS_INSTANCE, aVal.getType());
         assertEquals(Value.Type.CLASS_INSTANCE, bVal.getType());
 
-        // Compare instance identity by extracting (className, uuid)
-        InstanceRef ar = extractInstanceRef(aVal);
-        InstanceRef br = extractInstanceRef(bVal);
+        // Compare instance identity by (className, uuid)
+        Value.ClassInstance ar = aVal.asClassInstance();
+        Value.ClassInstance br = bVal.asClassInstance();
 
         assertEquals(ar.className, br.className);
         assertEquals(ar.uuid, br.uuid);
     }
 
-    private static final class InstanceRef {
-        final String className;
-        final String uuid;
-        InstanceRef(String className, String uuid) { this.className = className; this.uuid = uuid; }
-    }
-
-    private static InstanceRef extractInstanceRef(Value v) {
-        Object payload = extractPayloadObject(v);
-        assertNotNull(payload);
-
-        try {
-            Field classNameF = payload.getClass().getDeclaredField("className");
-            Field uuidF = payload.getClass().getDeclaredField("uuid");
-            classNameF.setAccessible(true);
-            uuidF.setAccessible(true);
-            return new InstanceRef((String) classNameF.get(payload), (String) uuidF.get(payload));
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    private static Object extractPayloadObject(Value v) {
-        String[] candidates = {"value", "raw", "data"};
-        for (String fName : candidates) {
-            try {
-                Field f = Value.class.getDeclaredField(fName);
-                f.setAccessible(true);
-                return f.get(v);
-            } catch (NoSuchFieldException ignored) {
-            } catch (IllegalAccessException e) {
-                throw new RuntimeException(e);
-            }
-        }
-        fail("Could not find payload field on Value (tried value/raw/data).");
-        return null;
-    }
-    
     @Test
     public void thisIsPerInstanceNotGlobal() {
         ElaraScript es = new ElaraScript();
@@ -94,24 +58,26 @@ public class ElaraScriptMethodThisTest {
                 "let ra = a.self();\n" +
                 "let rb = b.self();\n";
 
-        Map<String, Value> env = assertDoesNotThrow(() ->
-                es.run(src, new HashMap<>())
+        Map<String, Value> snapshot = assertDoesNotThrow(() ->
+                es.run(src, new LinkedHashMap<>(), new LinkedHashMap<>())
         );
 
-        Value aVal = env.get("a");
-        Value bVal = env.get("b");
-        Value raVal = env.get("ra");
-        Value rbVal = env.get("rb");
+        Map<String, Value> vars = extractInnermostVars(snapshot);
+
+        Value aVal = vars.get("a");
+        Value bVal = vars.get("b");
+        Value raVal = vars.get("ra");
+        Value rbVal = vars.get("rb");
 
         assertEquals(Value.Type.CLASS_INSTANCE, aVal.getType());
         assertEquals(Value.Type.CLASS_INSTANCE, bVal.getType());
         assertEquals(Value.Type.CLASS_INSTANCE, raVal.getType());
         assertEquals(Value.Type.CLASS_INSTANCE, rbVal.getType());
 
-        InstanceRef a = extractInstanceRef(aVal);
-        InstanceRef b = extractInstanceRef(bVal);
-        InstanceRef ra = extractInstanceRef(raVal);
-        InstanceRef rb = extractInstanceRef(rbVal);
+        Value.ClassInstance a = aVal.asClassInstance();
+        Value.ClassInstance b = bVal.asClassInstance();
+        Value.ClassInstance ra = raVal.asClassInstance();
+        Value.ClassInstance rb = rbVal.asClassInstance();
 
         // ra must be same instance as a
         assertEquals(a.className, ra.className);
@@ -133,9 +99,11 @@ public class ElaraScriptMethodThisTest {
                 "class MyClass { def self() { return this; } }\n" +
                 "let x = this;\n";
 
-        assertThrows(RuntimeException.class, () -> es.run(src, new HashMap<>()));
+        assertThrows(RuntimeException.class, () ->
+                es.run(src, new LinkedHashMap<>(), new LinkedHashMap<>())
+        );
     }
-    
+
     @Test
     public void parametersBindNormallyWithThisInjected() {
         ElaraScript es = new ElaraScript();
@@ -147,18 +115,19 @@ public class ElaraScriptMethodThisTest {
                 "let a = new MyClass();\n" +
                 "let v = a.pick(123);\n";
 
-        Map<String, Value> env = assertDoesNotThrow(() ->
-                es.run(src, new HashMap<>())
+        Map<String, Value> snapshot = assertDoesNotThrow(() ->
+                es.run(src, new LinkedHashMap<>(), new LinkedHashMap<>())
         );
 
-        assertTrue(env.containsKey("v"));
-        Value vVal = env.get("v");
+        Map<String, Value> vars = extractInnermostVars(snapshot);
 
-        // adjust if your numbers are doubles; this is a safe check:
+        assertTrue(vars.containsKey("v"));
+        Value vVal = vars.get("v");
+
         assertEquals(Value.Type.NUMBER, vVal.getType());
         assertEquals(123.0, vVal.asNumber(), 0.0);
     }
-    
+
     @Test
     public void dotMethodCallOnNonInstanceThrows() {
         ElaraScript es = new ElaraScript();
@@ -168,7 +137,9 @@ public class ElaraScriptMethodThisTest {
                 "let x = 5;\n" +
                 "let y = x.self();\n";
 
-        assertThrows(RuntimeException.class, () -> es.run(src, new HashMap<>()));
+        assertThrows(RuntimeException.class, () ->
+                es.run(src, new LinkedHashMap<>(), new LinkedHashMap<>())
+        );
     }
 
     @Test
@@ -180,7 +151,31 @@ public class ElaraScriptMethodThisTest {
                 "let a = new MyClass();\n" +
                 "let y = a.nope();\n";
 
-        assertThrows(RuntimeException.class, () -> es.run(src, new HashMap<>()));
+        assertThrows(RuntimeException.class, () ->
+                es.run(src, new LinkedHashMap<>(), new LinkedHashMap<>())
+        );
     }
 
+    // ---------------- helpers ----------------
+
+    private static Map<String, Value> extractInnermostVars(Map<String, Value> snapshot) {
+        Value envsV = snapshot.get("environments");
+        assertNotNull(envsV, "snapshot must contain environments");
+        assertEquals(Value.Type.ARRAY, envsV.getType(), "environments must be ARRAY");
+
+        List<Value> frames = envsV.asArray();
+        assertNotNull(frames, "environments array must not be null");
+        assertFalse(frames.isEmpty(), "environments must not be empty");
+
+        Value lastFrameV = frames.get(frames.size() - 1);
+        assertNotNull(lastFrameV, "last frame must not be null");
+        assertEquals(Value.Type.MAP, lastFrameV.getType(), "frame must be MAP");
+
+        Map<String, Value> frame = lastFrameV.asMap();
+        Value varsV = frame.get("vars");
+        assertNotNull(varsV, "frame must contain vars");
+        assertEquals(Value.Type.MAP, varsV.getType(), "vars must be MAP");
+
+        return varsV.asMap();
+    }
 }

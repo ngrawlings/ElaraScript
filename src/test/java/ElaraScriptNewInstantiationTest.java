@@ -3,8 +3,10 @@ import org.junit.jupiter.api.Test;
 import com.elara.script.ElaraScript;
 import com.elara.script.parser.Value;
 
-import java.lang.reflect.Field;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -12,7 +14,7 @@ import static org.junit.jupiter.api.Assertions.*;
 public class ElaraScriptNewInstantiationTest {
 
     @Test
-    public void newCreatesInstanceHandleAndStateMapInEnv() {
+    public void newCreatesInstanceStateAndTracksLiveInstances() {
         ElaraScript es = new ElaraScript();
 
         String src =
@@ -20,144 +22,78 @@ public class ElaraScriptNewInstantiationTest {
                 "  let x = 0;\n" +
                 "  let y = 0;\n" +
                 "  def constructor() { \n" +
-                "     this.x = 1;\n" + 
+                "     this.x = 1;\n" +
+                "  }\n" +
+                "  def myMethod() { this.y = this.x + 3; }\n" +
                 "}\n" +
-                "  def myMethod() { this.y = this.x +3;\n  }\n" +
-                "}\n" + 
                 "function fn() {\n" +
-                "let a = new MyClass();\n" +
-                "let b = new MyClass();\n" +
-                "a.myMethod();\n" +
-                "let x = a.x;\n" +
-                "let y = a.y;\n" +
-                "debug_print();\n" + 
-                "}" + 
+                "  let a = new MyClass();\n" +
+                "  let b = new MyClass();\n" +
+                "  a.myMethod();\n" +
+                "}\n" +
                 "fn();\n";
 
-        Map<String, Value> env = assertDoesNotThrow(() ->
-                es.run(src, new HashMap<>())
+        Map<String, Value> snapshot = assertDoesNotThrow(() ->
+                es.run(src, new LinkedHashMap<>(), new LinkedHashMap<>())
         );
 
-        assertNotNull(env, "env snapshot must not be null");
+        assertNotNull(snapshot, "snapshot must not be null");
 
-        // 1) a and b exist
-        assertTrue(env.containsKey("a"), "a must exist in env snapshot");
-        assertTrue(env.containsKey("b"), "b must exist in env snapshot");
+        // After fn() returns, a/b are out of scope. The observable artifact is live instance tracking.
+        List<Map<String, Value>> classInstances = extractClassInstances(snapshot);
 
-        Value aVal = env.get("a");
-        Value bVal = env.get("b");
-        assertNotNull(aVal, "a must not be null");
-        assertNotNull(bVal, "b must not be null");
-
-        // 2) a and b must be CLASS_INSTANCE
-        assertEquals(Value.Type.CLASS_INSTANCE, aVal.getType(), "a must be CLASS_INSTANCE");
-        assertEquals(Value.Type.CLASS_INSTANCE, bVal.getType(), "b must be CLASS_INSTANCE");
-
-        // 3) Extract (className, uuid) payload from both instances
-        InstanceRef aRef = extractInstanceRef(aVal);
-        InstanceRef bRef = extractInstanceRef(bVal);
-
-        assertEquals("MyClass", aRef.className, "a.className must be MyClass");
-        assertEquals("MyClass", bRef.className, "b.className must be MyClass");
-
-        assertNotNull(aRef.uuid, "a.uuid must not be null");
-        assertNotNull(bRef.uuid, "b.uuid must not be null");
-        assertFalse(aRef.uuid.isEmpty(), "a.uuid must not be empty");
-        assertFalse(bRef.uuid.isEmpty(), "b.uuid must not be empty");
-        assertNotEquals(aRef.uuid, bRef.uuid, "a and b must have different UUIDs");
-
-        // 4) Verify env contains state maps under MyClass.<uuid>
-        String aKey = aRef.className + "." + aRef.uuid;
-        String bKey = bRef.className + "." + bRef.uuid;
-
-        assertTrue(env.containsKey(aKey), "env must contain state map for a: " + aKey);
-        assertTrue(env.containsKey(bKey), "env must contain state map for b: " + bKey);
-
-        Value aState = env.get(aKey);
-        Value bState = env.get(bKey);
-        assertNotNull(aState, "a state map value must not be null");
-        assertNotNull(bState, "b state map value must not be null");
-
-        // If your MAP type exists, assert it here:
-        // (If your engine uses a different enum name, update accordingly.)
-        assertEquals(Value.Type.MAP, aState.getType(), "a state must be MAP");
-        assertEquals(Value.Type.MAP, bState.getType(), "b state must be MAP");
-
-        // 5) Sanity: there should be exactly 2 MyClass.<uuid> state keys
-        List<String> stateKeys = env.keySet().stream()
-                .filter(k -> k.startsWith("MyClass."))
+        List<Map<String, Value>> myClass = classInstances.stream()
+                .filter(ci -> "MyClass".equals(ci.get("className").asString()))
                 .collect(Collectors.toList());
 
-        assertEquals(2, stateKeys.size(),
-                "env must contain exactly 2 MyClass.<uuid> state entries, found: " + stateKeys);
-    }
+        assertEquals(2, myClass.size(), "expected exactly 2 MyClass instances in snapshot.class_instances");
 
-    /**
-     * Lightweight extracted view of Value.ClassInstance without relying on public accessors.
-     */
-    private static final class InstanceRef {
-        final String className;
-        final String uuid;
+        // Each must have uuid and state map
+        for (Map<String, Value> ci : myClass) {
+            assertNotNull(ci.get("uuid"), "uuid must exist");
+            assertEquals(Value.Type.STRING, ci.get("uuid").getType(), "uuid must be STRING");
 
-        InstanceRef(String className, String uuid) {
-            this.className = className;
-            this.uuid = uuid;
-        }
-    }
+            assertNotNull(ci.get("state"), "state must exist");
+            assertEquals(Value.Type.MAP, ci.get("state").getType(), "state must be MAP");
 
-    /**
-     * Extracts Value.ClassInstance payload via reflection so the test survives refactors.
-     *
-     * Assumptions:
-     * - Value holds payload in a field named "value" OR similar.
-     * - Payload type is Value.ClassInstance with fields "className" and "uuid".
-     */
-    private static InstanceRef extractInstanceRef(Value v) {
-        Object payload = extractPayloadObject(v);
-        assertNotNull(payload, "CLASS_INSTANCE payload must not be null");
-
-        try {
-            Field classNameF = payload.getClass().getDeclaredField("className");
-            Field uuidF = payload.getClass().getDeclaredField("uuid");
-            classNameF.setAccessible(true);
-            uuidF.setAccessible(true);
-
-            Object cn = classNameF.get(payload);
-            Object id = uuidF.get(payload);
-
-            assertTrue(cn instanceof String, "payload.className must be a String");
-            assertTrue(id instanceof String, "payload.uuid must be a String");
-
-            return new InstanceRef((String) cn, (String) id);
-        } catch (NoSuchFieldException e) {
-            fail("Value.ClassInstance must have fields 'className' and 'uuid'. Found different structure: " + payload.getClass(), e);
-        } catch (IllegalAccessException e) {
-            fail("Could not access Value.ClassInstance fields via reflection.", e);
-        }
-        return null; // unreachable
-    }
-
-    /**
-     * Tries to pull the internal payload object out of Value.
-     * Update the field name here if your Value uses something other than "value".
-     */
-    private static Object extractPayloadObject(Value v) {
-        // Common patterns: "value", "raw", "data"
-        String[] candidates = new String[] {"value", "raw", "data"};
-
-        for (String fieldName : candidates) {
-            try {
-                Field f = Value.class.getDeclaredField(fieldName);
-                f.setAccessible(true);
-                return f.get(v);
-            } catch (NoSuchFieldException ignored) {
-                // try next
-            } catch (IllegalAccessException e) {
-                throw new RuntimeException("Unable to access Value payload field: " + fieldName, e);
-            }
+            Map<String, Value> state = ci.get("state").asMap();
+            assertNotNull(state.get("x"), "state.x must exist");
+            assertNotNull(state.get("y"), "state.y must exist");
         }
 
-        fail("Could not find a payload field on Value. Tried: " + Arrays.toString(candidates));
-        return null; // unreachable
+        // Validate effects:
+        // constructor sets x=1 for both instances
+        // only ONE instance had myMethod called, so exactly ONE should have y=4, the other y=0
+        int y4 = 0;
+        int y0 = 0;
+
+        for (Map<String, Value> ci : myClass) {
+            Map<String, Value> state = ci.get("state").asMap();
+            assertEquals(1.0, state.get("x").asNumber(), 0.0);
+
+            double y = state.get("y").asNumber();
+            if (y == 4.0) y4++;
+            else if (y == 0.0) y0++;
+            else fail("Unexpected y value: " + y);
+        }
+
+        assertEquals(1, y4, "exactly one instance should have y=4");
+        assertEquals(1, y0, "exactly one instance should have y=0");
+    }
+
+    // ---------------- helpers ----------------
+
+    private static List<Map<String, Value>> extractClassInstances(Map<String, Value> snapshot) {
+        Value cisV = snapshot.get("class_instances");
+        assertNotNull(cisV, "snapshot must contain class_instances");
+        assertEquals(Value.Type.ARRAY, cisV.getType(), "class_instances must be ARRAY");
+
+        List<Value> cis = cisV.asArray();
+        List<Map<String, Value>> out = new ArrayList<>(cis.size());
+        for (Value v : cis) {
+            assertEquals(Value.Type.MAP, v.getType(), "class_instance entry must be MAP");
+            out.add(v.asMap());
+        }
+        return out;
     }
 }

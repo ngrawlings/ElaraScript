@@ -592,20 +592,19 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
             if (v.getType() != Value.Type.STRING) throw new RuntimeException("getglobal() expects a string name");
 
             Environment g = exec_state.env;
-            while (g.parent != null) g = g.parent;          // walk to root env
-            return g.existsInCurrentScope(v.asString()) ? Value.nil() : g.get(v.asString());
+            return g.getGlobal(v.asString());
         }
 
-        // setglobal("varName", value) -> value
+        // Interpreter.java (inside visitCallExpr native dispatch)
         if ("setglobal".equals(name)) {
             if (args.size() != 2) throw new RuntimeException("setglobal() expects 2 arguments");
+            Environment g = exec_state.env;
             Value k = args.get(0);
             Value val = args.get(1);
             if (k.getType() != Value.Type.STRING) throw new RuntimeException("setglobal() first arg must be string");
 
-            Environment g = exec_state.env;
-            while (g.parent != null) g = g.parent;          // walk to root env
-            g.assign(k.asString(), val);                  // overwrite/create at root
+            // Create-or-overwrite global binding (do NOT call env.assign)
+            g.setGlobal(k.asString(), val);
             return val;
         }
         
@@ -1288,7 +1287,7 @@ public class Interpreter implements ExprVisitor<Value>, StmtVisitor {
 
 	    // 1) globals
 	    sb.append("\"global\":");
-	    sb.append(valueToJson(Value.map(Environment.global)));
+	    sb.append(valueToJson(Value.map(cur.exec_state.global)));
 
 	    // 2) env chain
 	    sb.append(",\"env_chain\":[");

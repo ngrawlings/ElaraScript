@@ -215,8 +215,9 @@ public final class ElaraEngineProtocol {
                     initialEnv
             );
 
-            // ✅ Keep env in ExecutionState for debug/tooling parity (not persisted by protocol)
-            session.execState.env = new Environment(rr.env());
+	         // Keep env in ExecutionState for debug/tooling parity (not persisted by protocol).
+	         // rr.env() is a snapshot; rebuild a root frame for the session execState.
+	         session.execState.env = new Environment(session.execState, extractRootEnvVars(rr.env()));
 
             // Capture env -> JSON-safe (existing tool; protocol doesn’t need engine changes)
             ElaraStateStore outStore = new ElaraStateStore().captureEnv(rr.env());
@@ -492,4 +493,29 @@ public final class ElaraEngineProtocol {
         }
         return out;
     }
+    
+    /**
+     * Extract the inner-most frame "vars" map from a snapshot returned by the engine.
+     * Snapshot format conventionally contains: environments: [ { vars: {...}, this: {...}? }, ... ]
+     */
+    private static Map<String, Value> extractRootEnvVars(Map<String, Value> snapshot) {
+        Map<String, Value> out = new LinkedHashMap<String, Value>();
+        if (snapshot == null) return out;
+
+        Value envsV = snapshot.get("environments");
+        if (envsV == null || envsV.getType() != Value.Type.ARRAY || envsV.asArray() == null) return out;
+
+        List<Value> frames = envsV.asArray();
+        if (frames.isEmpty()) return out;
+
+        Value innerV = frames.get(frames.size() - 1);
+        if (innerV == null || innerV.getType() != Value.Type.MAP || innerV.asMap() == null) return out;
+
+        Value varsV = innerV.asMap().get("vars");
+        if (varsV == null || varsV.getType() != Value.Type.MAP || varsV.asMap() == null) return out;
+
+        out.putAll(varsV.asMap());
+        return out;
+    }
+
 }

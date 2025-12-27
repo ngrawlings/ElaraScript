@@ -10,26 +10,29 @@ import java.util.Map;
 import java.util.Map.Entry;
 
 public class Environment {
-    public static final Map<String, Value> global = new LinkedHashMap<>();
+	// The ExecutionState must be state in order to have access to the globals (Map<String, Value> global;)
+    public ExecutionState exec_state;
 
     public final Environment parent;
     public final Value instance_owner;
 
     // LIFO of local scopes for THIS environment frame
-    private final Deque<Map<String, Value>> scopes = new ArrayDeque<>();
+    public final Deque<Map<String, Value>> scopes = new ArrayDeque<>();
 
     /*
      * This is only called for root, if it is called after root is already created it is a bug.
      * Due to the fact the engine is likely initialised for each event it may be called many times
      * over the live cycle of the service. But only once per execution bucket.
      */
-    public Environment() {
+    public Environment(ExecutionState exec_state) {
+    	this.exec_state = exec_state;
         this.parent = null;
         this.instance_owner = null;
         scopes.push(new LinkedHashMap<>()); // root scope
     }
     
-    public Environment(Map<String, Value> initial) {
+    public Environment(ExecutionState exec_state, Map<String, Value> initial) {
+    	this.exec_state = exec_state;
         this.parent = null;
         this.instance_owner = null;
         scopes.push(new LinkedHashMap<>()); // root scope
@@ -41,12 +44,14 @@ public class Environment {
     }
 
     private Environment(Environment parent, Value instance_owner) {
+    	this.exec_state = parent.exec_state;
         this.parent = parent;
         this.instance_owner = instance_owner;
         scopes.push(new LinkedHashMap<>()); // root scope for this frame
     }
     
-    public Environment(Map<String, Value> initial, java.util.Set<String> copyParams) {
+    public Environment(ExecutionState exec_state, Map<String, Value> initial, java.util.Set<String> copyParams) {
+    	this.exec_state = exec_state;
         this.parent = null;
         this.instance_owner = null;
         scopes.push(new LinkedHashMap<>());
@@ -56,7 +61,18 @@ public class Environment {
             top.putAll(bindForChildFrame(initial, copyParams)); // uses your helper
         }
     }
+    
+    public void setGlobal(String name, Value val) {
+    	this.exec_state.global.put(name, val);
+    }
+    
+    public void putAllGlobals(String name, Map<String, Value> map) {
+    	this.exec_state.global.putAll(map);
+    }
 
+    public Value getGlobal(String name) {
+    	return this.exec_state.global.get(name);
+    }
 
     // -------------------------
     // Block-scoping (LIFO)
@@ -142,7 +158,7 @@ public class Environment {
         }
 
         // global
-        if (global.containsKey(name)) return global.get(name);
+        if (exec_state.global.containsKey(name)) return exec_state.global.get(name);
 
         throw new RuntimeException("Undefined variable: " + name);
     }
@@ -156,7 +172,7 @@ public class Environment {
         Map<String, Value> t = thisMap();
         if (t != null && t.containsKey(name)) return true;
 
-        return global.containsKey(name);
+        return exec_state.global.containsKey(name);
     }
 
     public void assign(String name, Value value) {
@@ -178,8 +194,8 @@ public class Environment {
             return;
         }
 
-        if (global.containsKey(name)) {
-            global.put(name, value);
+        if (exec_state.global.containsKey(name)) {
+        	exec_state.global.put(name, value);
             return;
         }
 
@@ -205,8 +221,8 @@ public class Environment {
             return;
         }
 
-        if (global.containsKey(name)) {
-            global.remove(name);
+        if (exec_state.global.containsKey(name)) {
+        	exec_state.global.remove(name);
         }
     }
 
@@ -248,7 +264,7 @@ public class Environment {
 
         // Synthetic global frame so export/import doesn't special-case statics
         Map<String, Value> globalFrame = new LinkedHashMap<>();
-        globalFrame.put("vars", Value.map(new LinkedHashMap<>(global)));
+        globalFrame.put("vars", Value.map(new LinkedHashMap<>(exec_state.global)));
         framesInnerToOuter.add(0, globalFrame);
 
         return framesInnerToOuter;

@@ -4,6 +4,8 @@ import com.elara.script.parser.Value;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -18,7 +20,9 @@ public class ElaraScriptErrorHandlingModesTest {
         String src = "let x = y;";
 
         // With no callback, onInterpreterError throws the original exception.
-        assertThrows(RuntimeException.class, () -> es.run(src));
+        assertThrows(RuntimeException.class, () ->
+                es.run(src, new LinkedHashMap<>(), new LinkedHashMap<>())
+        );
     }
 
     @Test
@@ -44,11 +48,15 @@ public class ElaraScriptErrorHandlingModesTest {
             ""
         );
 
-        Map<String, Value> env = assertDoesNotThrow(() -> es.run(src));
+        Map<String, Value> snapshot = assertDoesNotThrow(() ->
+                es.run(src, new LinkedHashMap<>(), new LinkedHashMap<>())
+        );
 
-        assertEquals("var_not_found", env.get("kind").asString());
-        assertEquals("y", env.get("name").asString());
-        assertTrue(env.get("message").asString().contains("Undefined variable"));
+        Map<String, Value> vars = extractInnermostVars(snapshot);
+
+        assertEquals("var_not_found", vars.get("kind").asString());
+        assertEquals("y", vars.get("name").asString());
+        assertTrue(vars.get("message").asString().contains("Undefined variable"));
     }
 
     @Test
@@ -70,11 +78,43 @@ public class ElaraScriptErrorHandlingModesTest {
             ""
         );
 
-        EntryRunResult rr =
-                assertDoesNotThrow(() -> es.runWithEntryResult(src, "main", null, null));
+        EntryRunResult rr = assertDoesNotThrow(() ->
+                es.runWithEntryResult(
+                        src,
+                        "main",
+                        List.of(),                // no args
+                        new LinkedHashMap<>(),     // liveInstances
+                        new LinkedHashMap<>()      // env
+                )
+        );
 
-        assertTrue(rr.env().get("seen").asBool(), "expected callback to run");
+        Map<String, Value> vars = extractInnermostVars(rr.env());
+        assertTrue(vars.get("seen").asBool(), "expected callback to run");
+
         // If execution aborted on error, return value should typically be null (Value.nil()).
         assertEquals(Value.Type.NULL, rr.value().getType());
+    }
+
+    // ---------------- helpers ----------------
+
+    private static Map<String, Value> extractInnermostVars(Map<String, Value> snapshot) {
+        Value envsV = snapshot.get("environments");
+        assertNotNull(envsV, "snapshot must contain environments");
+        assertEquals(Value.Type.ARRAY, envsV.getType(), "environments must be ARRAY");
+
+        List<Value> frames = envsV.asArray();
+        assertNotNull(frames, "environments array must not be null");
+        assertFalse(frames.isEmpty(), "environments must not be empty");
+
+        Value lastFrameV = frames.get(frames.size() - 1);
+        assertNotNull(lastFrameV, "last frame must not be null");
+        assertEquals(Value.Type.MAP, lastFrameV.getType(), "frame must be MAP");
+
+        Map<String, Value> frame = lastFrameV.asMap();
+        Value varsV = frame.get("vars");
+        assertNotNull(varsV, "frame must contain vars");
+        assertEquals(Value.Type.MAP, varsV.getType(), "vars must be MAP");
+
+        return varsV.asMap();
     }
 }

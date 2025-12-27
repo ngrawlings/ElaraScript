@@ -40,16 +40,19 @@ public class ExecutionState {
     public static final String KEY_INSTANCES = "instances"; // array< {key,className,uuid,state} >
 
     public LinkedHashMap<String, Value.ClassInstance> liveInstances;
+    public Map<String, Value> global;
     public Environment env;
 
     public ExecutionState() {
         this.liveInstances = new LinkedHashMap<>();
-        this.env = new Environment();
+        this.global = new LinkedHashMap<>(); 
+        this.env = new Environment(this);
     }
 
     public ExecutionState(Map<String, Value.ClassInstance> instances, Map<String, Value> env_state) {
         this.liveInstances = (instances == null) ? new LinkedHashMap<>() : new LinkedHashMap<>(instances);
-        this.env = new Environment(env_state == null ? new LinkedHashMap<>() : env_state);
+        this.global = new LinkedHashMap<>();
+        this.env = new Environment(this, env_state == null ? new LinkedHashMap<>() : env_state);
     }
 
     // ===================== EXPORT (VALUE) =====================
@@ -134,8 +137,8 @@ public class ExecutionState {
         }
 
         // Fallback: if no frames, still export globals from Environment.global
-        if (Environment.global != null) {
-            outGlobalVars.putAll(Environment.global);
+        if (global != null) {
+            outGlobalVars.putAll(global);
         }
     }
 
@@ -166,8 +169,8 @@ public class ExecutionState {
         // global vars
         Value globalV = exec.get(KEY_GLOBAL);
         if (globalV != null && globalV.getType() == Value.Type.MAP && globalV.asMap() != null) {
-            Environment.global.clear();
-            Environment.global.putAll(globalV.asMap());
+        	out.global.clear();
+        	out.global.putAll(globalV.asMap());
         }
 
         // env vars (root env state)
@@ -176,7 +179,7 @@ public class ExecutionState {
         if (envV != null && envV.getType() == Value.Type.MAP && envV.asMap() != null) {
             envVars.putAll(envV.asMap());
         }
-        out.env = new Environment(envVars);
+        out.env = new Environment(out, envVars);
 
         // instances
         out.liveInstances.clear();

@@ -2,6 +2,7 @@ import org.junit.jupiter.api.Test;
 
 import com.elara.script.ElaraScript;
 import com.elara.script.parser.Value;
+import com.elara.script.parser.utils.SnapshotUtils;
 
 import java.util.Collections;
 import java.util.List;
@@ -11,12 +12,13 @@ import static org.junit.jupiter.api.Assertions.*;
 
 public class ElaraScriptTest {
 
-    private static Value v(Map<String, Value> env, String name) {
-        Value val = env.get(name);
-        assertNotNull(val, "Expected variable in env: " + name);
-        return val;
-    }
-
+	private static Value v(Map<String, Value> snapshot, String name) {
+	    Map<String, Value> env = SnapshotUtils.mergedVars(snapshot);
+	    Value val = env.get(name);
+	    assertNotNull(val, "Expected variable in env: " + name);
+	    return val;
+	}
+	
     @Test
     void letAndAssignment_number() {
         ElaraScript es = new ElaraScript();
@@ -168,7 +170,7 @@ public class ElaraScriptTest {
                 "let out = add3(1, **args);\n"
         );
 
-        assertEquals(6.0, env.get("out").asNumber(), 1e-9);
+        assertEquals(6.0, v(env, "out").asNumber(), 1e-9);
     }
     
     @Test

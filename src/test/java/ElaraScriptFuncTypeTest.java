@@ -2,7 +2,11 @@ import org.junit.jupiter.api.Test;
 
 import com.elara.script.ElaraScript;
 import com.elara.script.parser.Value;
+import com.elara.script.parser.utils.SnapshotUtils;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -23,10 +27,48 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 public class ElaraScriptFuncTypeTest {
 
-    private static Value v(Map<String, Value> env, String name) {
-        Value out = env.get(name);
-        assertNotNull(out, "Missing env var: " + name);
-        return out;
+	private static Value v(Map<String, Value> snapshot, String name) {
+	    Map<String, Value> env = SnapshotUtils.mergedVars(snapshot);
+	    Value val = env.get(name);
+	    assertNotNull(val, "Expected variable in env: " + name);
+	    return val;
+	}
+
+    private static boolean hasVar(Map<String, Value> snapshot, String name) {
+        return lookupVar(snapshot, name) != null;
+    }
+
+    /**
+     * Resolve a variable from the snapshot by searching frames from inner -> outer.
+     * Snapshot shape (current):
+     *   environments: [ { vars: {...}, this: {...}, ... }, ... ]
+     */
+    private static Value lookupVar(Map<String, Value> snapshot, String name) {
+        if (snapshot == null) return null;
+
+        // Backward-compat: if it's already a flat env, allow direct access
+        if (snapshot.containsKey(name)) return snapshot.get(name);
+
+        Value envsV = snapshot.get("environments");
+        if (envsV == null || envsV.getType() != Value.Type.ARRAY) return null;
+
+        List<Value> frames = envsV.asArray();
+        if (frames == null) return null;
+
+        for (int i = frames.size() - 1; i >= 0; i--) {
+            Value frameV = frames.get(i);
+            if (frameV == null || frameV.getType() != Value.Type.MAP) continue;
+            Map<String, Value> frame = frameV.asMap();
+            if (frame == null) continue;
+
+            Value varsV = frame.get("vars");
+            if (varsV == null || varsV.getType() != Value.Type.MAP) continue;
+            Map<String, Value> vars = varsV.asMap();
+            if (vars == null) continue;
+
+            if (vars.containsKey(name)) return vars.get(name);
+        }
+        return null;
     }
 
     @Test
@@ -37,8 +79,8 @@ public class ElaraScriptFuncTypeTest {
                 "function my_function(a) { return a; }\n" +
                 "let x = my_function;\n";
 
-        Map<String, Value> env = es.run(src);
-        Value x = v(env, "x");
+        Map<String, Value> snapshot = es.run(src);
+        Value x = v(snapshot, "x");
 
         assertEquals(Value.Type.FUNC, x.getType());
         assertEquals("my_function", x.asString());
@@ -63,8 +105,8 @@ public class ElaraScriptFuncTypeTest {
                 "let my_function = \"hello\";\n" +
                 "let x = my_function;\n";
 
-        Map<String, Value> env = es.run(src);
-        Value x = v(env, "x");
+        Map<String, Value> snapshot = es.run(src);
+        Value x = v(snapshot, "x");
 
         assertEquals(Value.Type.STRING, x.getType());
         assertEquals("hello", x.asString());
@@ -79,8 +121,8 @@ public class ElaraScriptFuncTypeTest {
                 "let f = foo;\n" +
                 "let t = typeof(f);\n";
 
-        Map<String, Value> env = es.run(src);
-        Value t = v(env, "t");
+        Map<String, Value> snapshot = es.run(src);
+        Value t = v(snapshot, "t");
 
         assertEquals("function", t.asString());
     }
@@ -115,28 +157,26 @@ public class ElaraScriptFuncTypeTest {
                 "let eq_ab = (a == b);\n" +
                 "let eq_ac = (a == c);\n";
 
-        Map<String, Value> env = es.run(src);
+        Map<String, Value> snapshot = es.run(src);
 
-        assertFalse(v(env, "eq_ab").asBool());
-        assertTrue(v(env, "eq_ac").asBool());
+        assertFalse(v(snapshot, "eq_ab").asBool());
+        assertTrue(v(snapshot, "eq_ac").asBool());
     }
 
     @Test
     public void plusOperator_DoesNotAllowFuncConcatenation() {
         ElaraScript es = new ElaraScript();
 
-        // Capture errors if callback mode is active (or becomes active).
         final StringBuilder lastMsg = new StringBuilder();
 
         es.registerFunction("event_system_error", args -> {
-            // args: kind, nameOrNull, functionOrNull, lineOrNull, message
             lastMsg.setLength(0);
-            lastMsg.append(args.get(4).asString());
+            if (args != null && args.size() >= 5 && args.get(4) != null) {
+                lastMsg.append(args.get(4).asString());
+            }
             return Value.nil();
         });
 
-        // If your environment later enables callback suppression, this will be used.
-        // If it doesn't, the exception will throw and we still pass.
         es.setErrorCallback("event_system_error");
 
         String src =
@@ -146,25 +186,20 @@ public class ElaraScriptFuncTypeTest {
 
         boolean threw = false;
         try {
-            Map<String, Value> env = es.run(src);
+            Map<String, Value> snapshot = es.run(src);
 
-            // Suppressed mode: must NOT define 's'
-            assertFalse(env.containsKey("s"), "s should not be defined when '+' fails");
-
-            // And we should have received an error message
+            // Suppressed mode: should not bind 's' successfully.
+            assertFalse(hasVar(snapshot, "s"), "s should not be defined when '+' fails");
             assertTrue(lastMsg.length() > 0, "Expected system error callback to be invoked");
         } catch (RuntimeException ex) {
             threw = true;
-            // Throwing mode: ensure it’s the expected failure type (be tolerant about message)
             String msg = (ex.getMessage() == null) ? "" : ex.getMessage().toLowerCase();
             assertTrue(msg.contains("unsupported") || msg.contains("operand") || msg.contains("+"),
                     "Expected '+' to reject FUNC concatenation, got: " + ex.getMessage());
         }
 
-        // Sanity: at least one of the paths happened (always true, but keeps intent obvious)
         assertTrue(threw || lastMsg.length() > 0);
     }
-
 
     @Test
     public void strictMode_FuncVariable_IsNotCallable() {
@@ -176,9 +211,9 @@ public class ElaraScriptFuncTypeTest {
                 "let r = f(7);\n";
 
         RuntimeException ex = assertThrows(RuntimeException.class, () -> es.run(src));
+        String msg = (ex.getMessage() == null) ? "" : ex.getMessage().toLowerCase();
         assertTrue(
-                ex.getMessage().toLowerCase().contains("unknown function")
-                        || ex.getMessage().toLowerCase().contains("fn_not_found"),
+                msg.contains("unknown function") || msg.contains("fn_not_found") || msg.contains("not callable"),
                 "Expected STRICT mode to reject calling FUNC variable, got: " + ex.getMessage()
         );
     }

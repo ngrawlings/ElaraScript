@@ -1,27 +1,31 @@
 import static org.junit.jupiter.api.Assertions.*;
 
-import java.util.Map;
-
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import com.elara.script.parser.Environment;
+import com.elara.script.parser.ExecutionState;
 import com.elara.script.parser.Value;
 
 public class EnvironmentTraversalTest {
 
+    private ExecutionState exec;
+    private Environment root;
+
     @BeforeEach
     void resetGlobals() {
-        Environment.global.clear();
+        exec = new ExecutionState();
+        // ExecutionState() should initialize exec.global, but safe either way:
+        exec.global.clear();
+        root = new Environment(exec);
     }
 
     @Test
     void getTraversal_varsThenParentThenGlobal() {
         // global
-        Environment.global.put("g", Value.number(100));
+        exec.global.put("g", Value.number(100));
 
         // root env
-        Environment root = new Environment();
         root.define("a", Value.number(1));
         root.define("shadow", Value.number(10));
 
@@ -47,7 +51,6 @@ public class EnvironmentTraversalTest {
 
     @Test
     void assignUpdatesNearestExistingScope_notLocalCopy() {
-        Environment root = new Environment();
         root.define("i", Value.number(0));
 
         Environment child = root.childScope(null);
@@ -62,9 +65,8 @@ public class EnvironmentTraversalTest {
 
     @Test
     void assignUndefinedThrows_evenIfGlobalHasOtherKeys() {
-        Environment.global.put("g", Value.number(1));
+        exec.global.put("g", Value.number(1));
 
-        Environment root = new Environment();
         Environment child = root.childScope(null);
 
         RuntimeException ex = assertThrows(RuntimeException.class, () -> child.assign("missing", Value.number(9)));
@@ -73,7 +75,6 @@ public class EnvironmentTraversalTest {
 
     @Test
     void defineCreatesLocal_onlyAndDoesNotTouchParent() {
-        Environment root = new Environment();
         root.define("x", Value.number(1));
 
         Environment child = root.childScope(null);
@@ -85,7 +86,6 @@ public class EnvironmentTraversalTest {
 
     @Test
     void removeRemovesFromNearestScopeInResolutionChain() {
-        Environment root = new Environment();
         root.define("x", Value.number(1));
 
         Environment child = root.childScope(null);
@@ -104,7 +104,6 @@ public class EnvironmentTraversalTest {
     @Test
     void initialVarsAreEmptyInChildScope_soLoopCountersDontLoseState() {
         // This specifically catches the old "seed child vars with parent vars" bug.
-        Environment root = new Environment();
         root.define("i", Value.number(0));
 
         Environment child = root.childScope(null);
@@ -125,9 +124,9 @@ public class EnvironmentTraversalTest {
         // - reads fall back to parent/global
         // - assigns update nearest existing binding
 
-        Environment.global.put("g", Value.number(99));
+        exec.global.put("g", Value.number(99));
 
-        Environment closure = new Environment();
+        Environment closure = new Environment(exec);
         closure.define("captured", Value.number(7)); // closure binding
 
         Environment callFrame = closure.childScope(null);

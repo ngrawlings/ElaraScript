@@ -3,8 +3,9 @@ import org.junit.jupiter.api.Test;
 import com.elara.script.ElaraScript;
 import com.elara.script.parser.Value;
 
-import java.lang.reflect.Field;
-import java.util.*;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -22,69 +23,65 @@ public class ElaraScriptClassBodyParseTest {
                 "}\n" +
                 "let ok = true;\n";
 
-        Map<String, Value> env = assertDoesNotThrow(() ->
-                es.run(src, new HashMap<>())
+        // NEW: run signature is (source, liveInstances, initialEnv)
+        Map<String, Value> snapshot = assertDoesNotThrow(() ->
+                es.run(src, new LinkedHashMap<>(), new LinkedHashMap<>())
         );
 
-        assertNotNull(env);
-        assertTrue(env.containsKey("ok"), "ok should exist (sanity check)");
+        assertNotNull(snapshot);
 
-        // Since classes are now stored in env:
-        assertTrue(env.containsKey("MyClass"), "MyClass descriptor should be stored in env");
+        // Snapshot shape: { environments: [...], class_instances: [...] }
+        Map<String, Value> vars = extractInnermostVars(snapshot);
 
-        Value clsVal = env.get("MyClass");
+        assertTrue(vars.containsKey("ok"), "ok should exist (sanity check)");
+
+        // Since classes are now stored in env vars:
+        assertTrue(vars.containsKey("MyClass"), "MyClass descriptor should be stored in env vars");
+
+        Value clsVal = vars.get("MyClass");
         assertNotNull(clsVal, "MyClass value must not be null");
         assertEquals(Value.Type.CLASS, clsVal.getType(), "MyClass must be CLASS type");
 
-        Object desc = extractPayloadObject(clsVal);
+        Value.ClassDescriptor desc = clsVal.asClass();
         assertNotNull(desc, "CLASS descriptor payload must not be null");
 
-        // reflect into Value.ClassDescriptor.methods
-        LinkedHashMap<String, Object> methods = extractMethodsMap(desc);
-
         // core assertion: class parser must have collected all defs
+        LinkedHashMap<String, Object> methods = desc.methods;
+
         assertTrue(methods.containsKey("a"), "methods must contain 'a'");
         assertTrue(methods.containsKey("b"), "methods must contain 'b'");
         assertTrue(methods.containsKey("self"), "methods must contain 'self'");
 
-        // optional: count sanity
         assertEquals(3, methods.size(), "expected exactly 3 methods in descriptor");
     }
 
-    @SuppressWarnings("unchecked")
-    private static LinkedHashMap<String, Object> extractMethodsMap(Object desc) {
-        try {
-            Field f = desc.getClass().getDeclaredField("methods");
-            f.setAccessible(true);
-            Object v = f.get(desc);
-            assertNotNull(v, "descriptor.methods must not be null");
-            assertTrue(v instanceof LinkedHashMap, "descriptor.methods must be a LinkedHashMap");
-            return (LinkedHashMap<String, Object>) v;
-        } catch (NoSuchFieldException e) {
-            fail("ClassDescriptor must have a field named 'methods'", e);
-        } catch (IllegalAccessException e) {
-            fail("Unable to access ClassDescriptor.methods via reflection", e);
-        }
-        return null; // unreachable
-    }
-
     /**
-     * Extract internal payload from Value without depending on a specific accessor name.
-     * Add more field candidates if your Value uses another name.
+     * Snapshot format:
+     *  snapshot["environments"] = ARRAY of MAP frames
+     *  each frame["vars"] = MAP of variables
+     *
+     * Environment.snapshotFrames() returns frames outer->inner, and it also
+     * prepends a synthetic global frame at index 0.
+     *
+     * The program variables we care about should be in the innermost frame.
      */
-    private static Object extractPayloadObject(Value v) {
-        String[] candidates = {"value", "raw", "data"};
-        for (String fName : candidates) {
-            try {
-                Field f = Value.class.getDeclaredField(fName);
-                f.setAccessible(true);
-                return f.get(v);
-            } catch (NoSuchFieldException ignored) {
-            } catch (IllegalAccessException e) {
-                throw new RuntimeException("Unable to access Value payload field: " + fName, e);
-            }
-        }
-        fail("Could not find payload field on Value. Tried: " + Arrays.toString(candidates));
-        return null; // unreachable
+    private static Map<String, Value> extractInnermostVars(Map<String, Value> snapshot) {
+        Value envsV = snapshot.get("environments");
+        assertNotNull(envsV, "snapshot must contain environments");
+        assertEquals(Value.Type.ARRAY, envsV.getType(), "environments must be ARRAY");
+
+        List<Value> frames = envsV.asArray();
+        assertFalse(frames.isEmpty(), "environments must not be empty");
+
+        Value lastFrameV = frames.get(frames.size() - 1);
+        assertNotNull(lastFrameV, "last frame must not be null");
+        assertEquals(Value.Type.MAP, lastFrameV.getType(), "frame must be MAP");
+
+        Map<String, Value> frame = lastFrameV.asMap();
+        Value varsV = frame.get("vars");
+        assertNotNull(varsV, "frame must contain vars");
+        assertEquals(Value.Type.MAP, varsV.getType(), "vars must be MAP");
+
+        return varsV.asMap();
     }
 }

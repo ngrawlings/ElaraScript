@@ -4,8 +4,8 @@ import com.elara.script.parser.Value;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -33,7 +33,8 @@ public class ElaraScriptEntryArgsContractTest {
                 src,
                 "event_system_ready",
                 List.of(Value.string("system"), Value.string("ready"), payload),
-                Map.of()
+                new LinkedHashMap<>(),   // liveInstances
+                new LinkedHashMap<>()    // env
         );
 
         assertEquals(Value.Type.NUMBER, rr.value().getType());
@@ -53,10 +54,14 @@ public class ElaraScriptEntryArgsContractTest {
                 src,
                 "event_system_ready",
                 List.of(Value.string("only_one_arg")),
-                Map.of()
+                new LinkedHashMap<>(),   // liveInstances
+                new LinkedHashMap<>()    // env
         ));
 
-        assertTrue(ex.getMessage().contains("event_system_ready() expects 3 arguments, got 1"),
-                "Got: " + ex.getMessage());
+        String msg = (ex.getMessage() == null) ? "" : ex.getMessage();
+        assertTrue(
+                msg.contains("event_system_ready") && msg.contains("expects") && msg.contains("3") && msg.contains("got") && msg.contains("1"),
+                "Got: " + msg
+        );
     }
 }

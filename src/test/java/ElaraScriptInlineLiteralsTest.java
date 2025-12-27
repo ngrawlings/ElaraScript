@@ -1,5 +1,6 @@
 import com.elara.script.ElaraScript;
 import com.elara.script.parser.Value;
+import com.elara.script.parser.utils.SnapshotUtils;
 
 import org.junit.jupiter.api.Test;
 
@@ -23,7 +24,8 @@ public class ElaraScriptInlineLiteralsTest {
 
     private static Map<String, Value> runGlobals(String src) {
         ElaraScript es = new ElaraScript();
-        return es.run(src);
+        Map<String, Value> snap = es.run(src);
+        return SnapshotUtils.mergedVars(snap);
     }
 
     // --- ARRAY LITERALS ---

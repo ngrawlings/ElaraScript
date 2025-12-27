@@ -209,4 +209,75 @@ public class ElaraStateStoreTest {
         assertNull(m.get("inf"));
         assertNull(m.get("ninf"));
     }
+    
+    @Test
+    void captureSnapshotEnv_extractsVarsCorrectly() {
+        ElaraScript es = new ElaraScript();
+
+        String src = String.join("\n",
+            "let weightKg = 80;",
+            "let durationMin = 40;",
+            "let intensity = 5;",
+            "let calories = 280;",
+            ""
+        );
+
+        Map<String, Value> snapshot = es.run(src, new LinkedHashMap<>(), new LinkedHashMap<>());
+
+        ElaraStateStore store = new ElaraStateStore();
+        store.captureEnv(snapshot); // captureEnv can take snapshot maps too (still Value->plain)
+
+        // But captureEnv(snapshot) will store "environments" + "class_instances".
+        // So for restoring as inputs, we want vars, not the whole snapshot.
+        Map<String, Value> vars = extractInnermostVars(snapshot);
+
+        ElaraStateStore varsStore = new ElaraStateStore().captureEnv(vars);
+        ElaraStateStore restored = ElaraStateStore.fromJson(varsStore.toJson());
+        Map<String, Object> inputs = restored.toRawInputs();
+
+        assertEquals(80.0, (Double) inputs.get("weightKg"), 0.0);
+        assertEquals(40.0, (Double) inputs.get("durationMin"), 0.0);
+        assertEquals(5.0, (Double) inputs.get("intensity"), 0.0);
+        assertEquals(280.0, (Double) inputs.get("calories"), 0.0);
+    }
+
+    private static Map<String, Value> extractInnermostVars(Map<String, Value> snapshot) {
+        Value envsV = snapshot.get("environments");
+        assertNotNull(envsV);
+        assertEquals(Value.Type.ARRAY, envsV.getType());
+
+        List<Value> frames = envsV.asArray();
+        assertFalse(frames.isEmpty());
+
+        Map<String, Value> lastFrame = frames.get(frames.size() - 1).asMap();
+        Value varsV = lastFrame.get("vars");
+        assertNotNull(varsV);
+        assertEquals(Value.Type.MAP, varsV.getType());
+
+        return varsV.asMap();
+    }
+    
+    @Test
+    void captureOutputs_converts_map_values_to_json_safe() {
+        ElaraStateStore store = new ElaraStateStore();
+
+        Map<String, Value> outputs = new LinkedHashMap<>();
+        Map<String, Value> inner = new LinkedHashMap<>();
+        inner.put("x", Value.number(1));
+        inner.put("y", Value.string("ok"));
+        outputs.put("m", Value.map(inner));
+
+        store.captureOutputs(outputs);
+
+        Object mv = store.toRawInputs().get("m");
+        assertTrue(mv instanceof Map);
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> m = (Map<String, Object>) mv;
+
+        assertEquals(1.0, (Double) m.get("x"), 0.0);
+        assertEquals("ok", m.get("y"));
+    }
+
+
 }
