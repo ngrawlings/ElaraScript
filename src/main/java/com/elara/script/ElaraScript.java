@@ -1,10 +1,8 @@
 package com.elara.script;
 
 import com.elara.script.parser.EntryRunResult;
-import com.elara.script.parser.Environment;
 import com.elara.script.parser.ExecutionState;
 import com.elara.script.parser.Interpreter;
-import com.elara.script.parser.Interpreter.LiveClassInstance;
 import com.elara.script.parser.Lexer;
 import com.elara.script.parser.Parser;
 import com.elara.script.parser.Statement.Block;
@@ -14,7 +12,6 @@ import com.elara.script.parser.Statement.Stmt;
 import com.elara.script.parser.Statement.While;
 import com.elara.script.parser.Token;
 import com.elara.script.parser.Value;
-import com.elara.script.parser.Value.ClassInstance;
 import com.elara.script.shaping.DataShapingRegistry;
 import com.elara.script.shaping.ElaraDataShaper;
 
@@ -135,7 +132,7 @@ public class ElaraScript {
                 shape,
                 rawInputs,
                 (initialEnv) -> {
-                    EntryRunResult rr = runWithEntryResult(source, entryFunctionName, entryArgs, initialEnv);
+                    EntryRunResult rr = runWithEntryResult(source, entryFunctionName, entryArgs, Collections.emptyMap(), initialEnv);
                     return rr.env();
                 },
                 includeDebugEnv
@@ -158,7 +155,7 @@ public class ElaraScript {
         return shaper.run(
                 shape,
                 rawInputs,
-                (initialEnv) -> run(source, initialEnv),
+                (initialEnv) -> run(source, Collections.emptyMap(), initialEnv),
                 includeDebugEnv
         );
     }
@@ -216,7 +213,7 @@ public class ElaraScript {
 
             // If callback is set, suppress, always.
             if (errorCallbackFn != null) {
-            	return interpreter.snapshot();
+            	return exec_state.snapshotValue();
             }
 
             // No callback: throw to host (JUnit)
@@ -276,7 +273,7 @@ public class ElaraScript {
             List<Value> args = (entryArgs == null) ? Collections.emptyList() : entryArgs;
             Value out = interpreter.invokeForHost(entryFunctionName, args);
 
-            return new EntryRunResult((interpreter == null) ? emptySnapshot(exec_state) : interpreter.snapshot(), out);
+            return new EntryRunResult(exec_state.snapshotValue(), out);
         } catch (RuntimeException e) {
             onInterpreterError(
                     e,
@@ -289,7 +286,7 @@ public class ElaraScript {
 
             // callback set => suppress (always)
             if (errorCallbackFn != null) {
-                return new EntryRunResult((interpreter == null) ? emptySnapshot(exec_state) : interpreter.snapshot(), Value.nil());
+                return new EntryRunResult(exec_state.snapshotValue(), Value.nil());
             }
 
             throw e;
@@ -516,23 +513,5 @@ public class ElaraScript {
             throw new RuntimeException(name + "() expects " + expected + " arguments, got " + args.size());
         }
     }
-    
-    private static Map<String, Value> emptySnapshot(ExecutionState exec_state) {
-        Map<String, Value> out = new LinkedHashMap<>();
-
-        List<Map<String, Value>> frames = exec_state.env.snapshotFrames();
-        List<Value> frameVals = new ArrayList<>(frames.size());
-        for (Map<String, Value> f : frames) frameVals.add(Value.map(f));
-
-        out.put("environments", Value.array(frameVals));
-        out.put("class_instances", new Value(Value.Type.MAP, exec_state.liveInstances));
-        return out;
-    }
-    
-    public Map<String, Value> snapshot(ExecutionState exec_state) {
-    	Interpreter _int = new Interpreter(exec_state, functions, dataShaping, maxCallDepth, mode, this::onInterpreterError);
-    	return _int.snapshot();
-    }
-
     
 }

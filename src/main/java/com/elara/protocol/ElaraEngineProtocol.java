@@ -7,6 +7,8 @@ import com.elara.protocol.util.JsonDeepCopy;
 import com.elara.script.ElaraScript;
 import com.elara.script.ElaraStateStore;
 import com.elara.script.parser.EntryRunResult;
+import com.elara.script.parser.ExecutionState;
+import com.elara.script.parser.Environment;
 import com.elara.script.parser.Value;
 
 import java.security.SecureRandom;
@@ -14,7 +16,6 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
-import java.util.Collections;
 import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -31,6 +32,11 @@ import java.util.regex.Pattern;
  *  - Only __global_state is persisted across calls.
  *  - Diff/fingerprint are computed ONLY over __global_state.
  *  - __commands is injected empty per-run and never persisted.
+ *
+ * NEW:
+ *  - Protocol owns per-session ExecutionState:
+ *      - liveInstances persist per session
+ *      - env is updated per run (optional, useful for debugging)
  */
 public final class ElaraEngineProtocol {
 
@@ -59,6 +65,9 @@ public final class ElaraEngineProtocol {
 
         // per-session include cache (populated on system.ready)
         final Map<String, String> scriptCache = new ConcurrentHashMap<String, String>();
+
+        // per-session execution state (instances + env)
+        final ExecutionState execState = new ExecutionState();
 
         // per-session retained state (JSON-safe) == ONLY __global_state contents
         final Map<String, Object> stateRaw = new LinkedHashMap<String, Object>();
@@ -122,113 +131,126 @@ public final class ElaraEngineProtocol {
             session = getSessionOrThrow((String) sid, (String) sk);
         }
 
-        // ---------------------------
-        // Baseline is ONLY session-owned globals
-        // ---------------------------
-        Map<String, Object> beforeGlobals;
+        // ------------------------------------------------------------
+        // IMPORTANT: per-session execution must be serialized because:
+        //  - session.execState.liveInstances is mutable and persists
+        //  - session.stateRaw is mutable and is the persisted slice
+        // ------------------------------------------------------------
         synchronized (session) {
-            beforeGlobals = JsonDeepCopy.deepCopyMap(session.stateRaw);
-        }
 
-        // ---------------------------
-        // Build env for the script
-        // ---------------------------
-        Map<String, Value> initialEnv = new LinkedHashMap<String, Value>();
+            // ---------------------------
+            // Baseline is ONLY session-owned globals
+            // ---------------------------
+            Map<String, Object> beforeGlobals = JsonDeepCopy.deepCopyMap(session.stateRaw);
 
-        // Always expose globals as a map
-        initialEnv.put("__global_state", Value.map(coerceMapToValueMap(beforeGlobals)));
+            // ---------------------------
+            // Build env for the script
+            // ---------------------------
+            Map<String, Value> initialEnv = new LinkedHashMap<String, Value>();
 
-        // Also expose each key as a top-level var (optional but handy)
-        for (Map.Entry<String, Object> e : beforeGlobals.entrySet()) {
-            initialEnv.put(e.getKey(), coerceAnyToValue(e.getValue()));
-        }
+            // Always expose globals as a map
+            initialEnv.put("__global_state", Value.map(coerceMapToValueMap(beforeGlobals)));
 
-        // Always inject fresh commands per-run (no persistence)
-        initialEnv.put("__commands", Value.array(new ArrayList<Value>()));
+            // Also expose each key as a top-level var (optional but handy)
+            for (Map.Entry<String, Object> e : beforeGlobals.entrySet()) {
+                initialEnv.put(e.getKey(), coerceAnyToValue(e.getValue()));
+            }
 
-        // Inject latest event into env
-        Object value = event.get("value");
+            // Always inject fresh commands per-run (no persistence)
+            initialEnv.put("__commands", Value.array(new ArrayList<Value>()));
 
-        initialEnv.put("__event_type", Value.string(typeStr));
-        initialEnv.put("__event_target", Value.string(targetStr));
-        initialEnv.put("__event_value", coerceAnyToValue(value));
+            // Inject latest event into env
+            Object value = event.get("value");
 
-        List<Value> tuple = new ArrayList<Value>(3);
-        tuple.add(initialEnv.get("__event_type"));
-        tuple.add(initialEnv.get("__event_target"));
-        tuple.add(initialEnv.get("__event_value"));
-        initialEnv.put("__event", Value.array(tuple));
+            initialEnv.put("__event_type", Value.string(typeStr));
+            initialEnv.put("__event_target", Value.string(targetStr));
+            initialEnv.put("__event_value", coerceAnyToValue(value));
 
-        // Run engine
-        ElaraScript engine = new ElaraScript();
-        builtins.register(engine);
+            List<Value> tuple = new ArrayList<Value>(3);
+            tuple.add(initialEnv.get("__event_type"));
+            tuple.add(initialEnv.get("__event_target"));
+            tuple.add(initialEnv.get("__event_value"));
+            initialEnv.put("__event", Value.array(tuple));
 
-        Value ev = initialEnv.get("__event");
-        if (ev == null || ev.getType() != Value.Type.ARRAY) {
-            throw new RuntimeException("__event missing or not ARRAY");
-        }
-        List<Value> evA = ev.asArray();
-        if (evA.size() != 3) {
-            throw new RuntimeException("__event must be [type, target, payload]");
-        }
+            // Run engine
+            ElaraScript engine = new ElaraScript();
+            builtins.register(engine);
 
-        List<Value> args = Arrays.asList(evA.get(0), evA.get(1), evA.get(2));
-        Value payload = evA.get(2);
+            Value ev = initialEnv.get("__event");
+            if (ev == null || ev.getType() != Value.Type.ARRAY) {
+                throw new RuntimeException("__event missing or not ARRAY");
+            }
+            List<Value> evA = ev.asArray();
+            if (evA.size() != 3) {
+                throw new RuntimeException("__event must be [type, target, payload]");
+            }
 
-        // cache includes on system.ready (payload may be MAP or legacy PAIRS array)
-        if (isSystemReady) {
-            if (log != null) log.i("ElaraProtocol", "cacheScriptsFromPayload(system.ready) session=" + session.sessionId);
-            cacheScriptsFromPayload(session, payload);
-        }
+            List<Value> args = Arrays.asList(evA.get(0), evA.get(1), evA.get(2));
+            Value payload = evA.get(2);
 
-        // preprocess includes (after caching)
-        String processed = preprocessIncludes(session, appScript);
+            // cache includes on system.ready (payload may be MAP or legacy PAIRS array)
+            if (isSystemReady) {
+                if (log != null) log.i("ElaraProtocol", "cacheScriptsFromPayload(system.ready) session=" + session.sessionId);
+                cacheScriptsFromPayload(session, payload);
+            }
 
-        if (processed.indexOf("#include") >= 0) {
-            throw new RuntimeException("Preprocess failed: #include still present");
-        }
+            // preprocess includes (after caching)
+            String processed = preprocessIncludes(session, appScript);
 
-        // Routing
-        String candidate = "event_" + sanitizeIdent(typeStr) + "_" + sanitizeIdent(targetStr);
-        String fallback = "event_router";
-        String entry = engine.hasUserFunction(processed, candidate) ? candidate : fallback;
+            if (processed.indexOf("#include") >= 0) {
+                throw new RuntimeException("Preprocess failed: #include still present");
+            }
 
-        EntryRunResult rr = engine.runWithEntryResult(processed, entry, args, initialEnv);
+            // Routing
+            String candidate = "event_" + sanitizeIdent(typeStr) + "_" + sanitizeIdent(targetStr);
+            String fallback = "event_router";
+            String entry = engine.hasUserFunction(processed, candidate) ? candidate : fallback;
 
-        // Capture env
-        ElaraStateStore outStore = new ElaraStateStore().captureEnv(rr.env());
-        Map<String, Object> raw = outStore.toRawInputs();
+            // ✅ UPDATED CALL SIGNATURE: pass liveInstances + env
+            EntryRunResult rr = engine.runWithEntryResult(
+                    processed,
+                    entry,
+                    args,
+                    session.execState.liveInstances,
+                    initialEnv
+            );
 
-        // ---------------------------
-        // Extract AFTER globals ONLY
-        // ---------------------------
-        Map<String, Object> afterGlobals = asStringObjectMap(raw.get("__global_state"));
+            // ✅ Keep env in ExecutionState for debug/tooling parity (not persisted by protocol)
+            session.execState.env = new Environment(rr.env());
 
-        // diff + fingerprint ONLY over globals
-        Map<String, Object> diff = StateDiff.diff(beforeGlobals, afterGlobals).toPatchObject();
-        String fp = StateFingerprint.fingerprintRawState(afterGlobals);
+            // Capture env -> JSON-safe (existing tool; protocol doesn’t need engine changes)
+            ElaraStateStore outStore = new ElaraStateStore().captureEnv(rr.env());
+            Map<String, Object> raw = outStore.toRawInputs();
 
-        // Persist ONLY globals back to session
-        synchronized (session) {
+            // ---------------------------
+            // Extract AFTER globals ONLY
+            // ---------------------------
+            Map<String, Object> afterGlobals = asStringObjectMap(raw.get("__global_state"));
+
+            // diff + fingerprint ONLY over globals
+            Map<String, Object> diff = StateDiff.diff(beforeGlobals, afterGlobals).toPatchObject();
+            String fp = StateFingerprint.fingerprintRawState(afterGlobals);
+
+            // Persist ONLY globals back to session
             session.stateRaw.clear();
             session.stateRaw.putAll(afterGlobals);
             session.fingerprint = fp;
+
+            // commands are ephemeral; return them but never persist
+            List<Object> commandsList = extractCommandsList(raw.get("__commands"));
+
+            Map<String, Object> resp = new LinkedHashMap<String, Object>();
+            resp.put("patch", diff);
+            resp.put("commands", commandsList);
+            resp.put("fingerprint", fp);
+
+            resp.put("sessionId", session.sessionId);
+            if (createdSession) {
+                resp.put("sessionKey", session.sessionKey);
+            }
+
+            return (Map<String, Object>) sanitizeForChannel(resp);
         }
-
-        // commands are ephemeral; return them but never persist
-        List<Object> commandsList = extractCommandsList(raw.get("__commands"));
-
-        Map<String, Object> resp = new LinkedHashMap<String, Object>();
-        resp.put("patch", diff);
-        resp.put("commands", commandsList);
-        resp.put("fingerprint", fp);
-
-        resp.put("sessionId", session.sessionId);
-        if (createdSession) {
-            resp.put("sessionKey", session.sessionKey);
-        }
-
-        return (Map<String, Object>) sanitizeForChannel(resp);
     }
 
     // -------------------------- Session management --------------------------
@@ -336,6 +358,7 @@ public final class ElaraEngineProtocol {
         return out;
     }
 
+    @SuppressWarnings("unchecked")
     private static List<Object> extractCommandsList(Object v) {
         if (!(v instanceof List)) return new ArrayList<Object>();
         return (List<Object>) v;

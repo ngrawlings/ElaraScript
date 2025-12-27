@@ -5,15 +5,16 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import com.elara.script.parser.Environment;
+import com.elara.script.parser.ExecutionState;
 import com.elara.script.parser.Value;
 
 /**
- * Example app that persists ElaraScript environment between processes using ElaraStateStore.
+ * Example app that persists ElaraScript ExecutionState between processes.
  *
  * Usage:
  *   java com.elara.script.ElaraPersistentRunner <script-file> <state-json-file>
@@ -44,7 +45,7 @@ public final class ElaraPersistentRunner {
 
         ElaraScript engine = new ElaraScript();
 
-        // 1) Load persisted state (JSON -> Map<String,Object> JSON-safe) using ORIGINAL store
+        // 1) Load persisted JSON (JSON-safe map) using ElaraStateStore's tiny JSON parser.
         ElaraStateStore store = new ElaraStateStore();
         if (Files.exists(statePath)) {
             try {
@@ -57,14 +58,24 @@ public final class ElaraPersistentRunner {
             }
         }
 
-        // 2) Convert JSON-safe raw state -> Map<String, ElaraScript.Value> initialEnv
-        Map<String, Object> rawInputs = store.toRawInputs();
-        Map<String, Value> initialEnv = toInitialEnv(rawInputs);
+        // 2) Restore unified ExecutionState from JSON-safe
+        ExecutionState exec_state;
+        try {
+            Map<String, Object> jsonSafe = store.toRawInputs();
+            exec_state = ExecutionState.importJsonSafe(jsonSafe);
+        } catch (Exception e) {
+            System.err.println("Warning: state file was malformed. Starting fresh: " + statePath);
+            e.printStackTrace(System.err);
+            exec_state = new ExecutionState();
+        }
 
-        // 3) Run with initial env restored
+        // 3) Build initialEnv from exec_state (root env vars). We persist only root env + globals.
+        Map<String, Value> initialEnv = extractRootEnvVars(exec_state);
+
+        // 4) Run with restored instances + env
         Map<String, Value> envAfter;
         try {
-            envAfter = engine.run(script, initialEnv);
+            envAfter = engine.run(script, exec_state.liveInstances, initialEnv);
         } catch (Exception e) {
             System.err.println("Script error:");
             e.printStackTrace(System.err);
@@ -72,11 +83,13 @@ public final class ElaraPersistentRunner {
             return;
         }
 
-        // 4) Snapshot envAfter into store (ORIGINAL store API)
-        store.captureEnv(envAfter);
+        // 5) Update exec_state env to reflect the post-run root environment
+        exec_state.env = new Environment(envAfter);
 
-        // 5) Persist to disk
-        String outJson = store.toJson();
+        // 6) Export unified state -> JSON-safe map -> JSON string using ElaraStateStore writer
+        Map<String, Object> outJsonSafe = exec_state.exportJsonSafe();
+        String outJson = new ElaraStateStore(outJsonSafe).toJson();
+
         try {
             Files.writeString(statePath, outJson, StandardCharsets.UTF_8);
         } catch (IOException e) {
@@ -86,9 +99,8 @@ public final class ElaraPersistentRunner {
             return;
         }
 
-        // 6) Print a couple useful lines
+        // 7) Print a couple useful lines
         System.out.println("State saved to: " + statePath.toAbsolutePath());
-        // Optional: print a stable “summary” value if present
         if (envAfter.containsKey("out")) {
             System.out.println("out = " + envAfter.get("out"));
         } else {
@@ -97,57 +109,25 @@ public final class ElaraPersistentRunner {
     }
 
     /**
-     * Converts JSON-safe values from ElaraStateStore into ElaraScript.Value for engine.run(..., initialEnv).
-     *
-     * JSON-safe allowed:
-     *   null, boolean, number, string, List (arrays), List<List> (matrices)
-     *
-     * NOTE: Your language itself doesn't parse matrix literals, but the engine *does* support MATRIX as a Value type,
-     * so we preserve it here (list-of-lists => MATRIX).
+     * Extract the root env vars from exec_state.env.
+     * If env has frames, use inner-most frame vars.
+     * If anything is missing, return empty.
      */
-    private static Map<String, Value> toInitialEnv(Map<String, Object> raw) {
-        LinkedHashMap<String, Value> out = new LinkedHashMap<>();
-        if (raw == null) return out;
+    private static Map<String, Value> extractRootEnvVars(ExecutionState exec_state) {
+        if (exec_state == null || exec_state.env == null) return new LinkedHashMap<>();
 
-        for (Map.Entry<String, Object> e : raw.entrySet()) {
-            out.put(e.getKey(), fromJsonSafe(e.getValue()));
-        }
-        return out;
-    }
+        List<Map<String, Value>> frames = exec_state.env.snapshotFrames();
+        if (frames == null || frames.isEmpty()) return new LinkedHashMap<>();
 
-    private static Value fromJsonSafe(Object v) {
-        if (v == null) return Value.nil();
+        Map<String, Value> inner = frames.get(frames.size() - 1);
+        if (inner == null) return new LinkedHashMap<>();
 
-        if (v instanceof Boolean) return Value.bool((Boolean) v);
-        if (v instanceof Number)  return Value.number(((Number) v).doubleValue());
-        if (v instanceof String)  return Value.string((String) v);
-
-        if (v instanceof List) {
-            List<?> list = (List<?>) v;
-
-            // If it's a list-of-lists, treat as MATRIX
-            if (!list.isEmpty() && list.get(0) instanceof List) {
-                List<List<Value>> rows = new ArrayList<>();
-                for (Object rowObj : list) {
-                    if (!(rowObj instanceof List)) {
-                        throw new IllegalArgumentException("Matrix rows must be lists");
-                    }
-                    List<?> row = (List<?>) rowObj;
-                    List<Value> r = new ArrayList<>(row.size());
-                    for (Object item : row) r.add(fromJsonSafe(item));
-                    rows.add(r);
-                }
-                return Value.matrix(rows);
-            }
-
-            // Otherwise treat as ARRAY
-            List<Value> arr = new ArrayList<>(list.size());
-            for (Object item : list) arr.add(fromJsonSafe(item));
-            return Value.array(arr);
+        Value varsV = inner.get("vars");
+        if (varsV == null || varsV.getType() != Value.Type.MAP || varsV.asMap() == null) {
+            return new LinkedHashMap<>();
         }
 
-        // (If you ever allow objects/maps in your language, you'd extend here)
-        throw new IllegalArgumentException("Unsupported persisted value type: " + v.getClass().getName());
+        return new LinkedHashMap<>(varsV.asMap());
     }
 
     private ElaraPersistentRunner() {}
